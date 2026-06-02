@@ -44,6 +44,18 @@ final class ProcessTapCapture {
     private var anchorNs: UInt64 = 0
     private var inputFramesSeen: UInt64 = 0
 
+    /// The rate the IO proc ACTUALLY delivers frames at. This is the
+    /// aggregate device's rate (= the output device's rate, e.g. 96 kHz on
+    /// MacBook Pro speakers), NOT the tap's nominal format rate — the two
+    /// disagree on machines whose output doesn't run at 48 kHz, and trusting
+    /// the wrong one plays everything at the wrong speed.
+    private var ioRate: Double = 48_000
+    // Rate self-healing: if frame-time keeps diverging from the host clock,
+    // measure the true rate and correct ourselves.
+    private var reanchorCount = 0
+    private var rateMeasureStartNs: UInt64 = 0
+    private var rateMeasureFrames: UInt64 = 0
+
     init(targetSampleRate: Double = 48_000, onAudio: @escaping Block) {
         self.targetSampleRate = targetSampleRate
         self.onAudio = onAudio
@@ -79,15 +91,8 @@ final class ProcessTapCapture {
               tapASBD.mChannelsPerFrame > 0 else {
             throw RuntimeError("unexpected tap format")
         }
-        if tapASBD.mSampleRate != targetSampleRate {
-            // We normalize every callback to interleaved stereo before
-            // resampling, so the resampler is always 2-channel.
-            resampler = LinearResampler(
-                sourceRate: tapASBD.mSampleRate,
-                targetRate: targetSampleRate,
-                channels: 2
-            )
-        }
+        // Resampler is configured later from the aggregate device's actual
+        // IO rate (see configureResampler()), not the tap's nominal rate.
 
         // 3. Wrap the tap in a private aggregate device (clocked by the
         //    default output device) so we can run an IO proc against it.
@@ -112,6 +117,21 @@ final class ProcessTapCapture {
             throw RuntimeError("AudioHardwareCreateAggregateDevice failed (\(status))")
         }
 
+        // The IO proc runs on the AGGREGATE's clock — its sample rate is the
+        // output device's rate (96 kHz on MacBook Pro speakers!), which can
+        // differ from the tap's nominal format rate. This is the rate the
+        // frames actually arrive at; resampling and timestamps must use it.
+        var aggregateRate: Float64 = 0
+        var rateSize = UInt32(MemoryLayout<Float64>.size)
+        var rateAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        status = AudioObjectGetPropertyData(aggregateID, &rateAddress, 0, nil, &rateSize, &aggregateRate)
+        ioRate = (status == noErr && aggregateRate > 0) ? aggregateRate : tapASBD.mSampleRate
+        configureResampler()
+
         // 4. IO proc: input buffers carry the tapped system audio.
         status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) {
             [weak self] _, inInputData, inInputTime, _, _ in
@@ -125,7 +145,18 @@ final class ProcessTapCapture {
             throw RuntimeError("AudioDeviceStart failed (\(status))")
         }
 
-        log("process-tap capture started (\(Int(tapASBD.mSampleRate)) Hz \(tapASBD.mChannelsPerFrame)ch -> \(Int(targetSampleRate)) Hz, original output MUTED)")
+        log("process-tap capture started (device \(Int(ioRate)) Hz \(tapASBD.mChannelsPerFrame)ch -> \(Int(targetSampleRate)) Hz, original output MUTED)")
+    }
+
+    /// (Re)build the resampler for the current `ioRate`. We normalize every
+    /// callback to interleaved stereo before resampling, so it's always
+    /// 2-channel.
+    private func configureResampler() {
+        if ioRate != targetSampleRate {
+            resampler = LinearResampler(sourceRate: ioRate, targetRate: targetSampleRate, channels: 2)
+        } else {
+            resampler = nil
+        }
     }
 
     func stop() {
@@ -213,21 +244,26 @@ final class ProcessTapCapture {
     }
 
     private func process(_ interleaved: [Float], frames: Int, channels: Int, hostNs: UInt64, hostTimeValid: Bool) {
-        let inputRate = tapASBD.mSampleRate
-
         if anchorNs == 0 {
             anchorNs = hostNs
+            rateMeasureStartNs = hostNs
+            rateMeasureFrames = 0
         } else if hostTimeValid {
-            let expectedNs = anchorNs + UInt64(Double(inputFramesSeen) / inputRate * 1e9)
+            let expectedNs = anchorNs + UInt64(Double(inputFramesSeen) / ioRate * 1e9)
             let errorNs = Int64(bitPattern: hostNs &- expectedNs)
             if errorNs.magnitude > 100_000_000 {
                 // Frame-counter time has diverged >100 ms from the host
-                // clock: the nominal rate or layout must be wrong. Re-anchor
-                // hard (one audible blip) instead of drifting forever, and
-                // say so — this should never fire; if it does, the log line
-                // is the bug report.
-                log("WARNING: tap timeline diverged \(errorNs / 1_000_000) ms from host clock — re-anchoring (rate/layout mismatch?)")
+                // clock: our notion of the IO rate must be wrong. Re-anchor
+                // hard, and after repeated divergence MEASURE the true rate
+                // (frames delivered / host time elapsed), snap to the
+                // nearest standard rate, and reconfigure — self-healing for
+                // devices whose reported rates lie.
+                reanchorCount += 1
+                log("WARNING: tap timeline diverged \(errorNs / 1_000_000) ms from host clock — re-anchoring (\(reanchorCount))")
                 anchorNs = UInt64(Int64(anchorNs) + errorNs)
+                if reanchorCount >= 3 {
+                    healRate(nowNs: hostNs)
+                }
             } else {
                 // Servo: nudge the anchor toward the host clock so
                 // frame-counter time can't drift away over hours (device vs
@@ -239,8 +275,9 @@ final class ProcessTapCapture {
         }
 
         // Contiguous capture timestamp for this block, on the frame grid.
-        let captureNs = anchorNs + UInt64(Double(inputFramesSeen) / inputRate * 1e9)
+        let captureNs = anchorNs + UInt64(Double(inputFramesSeen) / ioRate * 1e9)
         inputFramesSeen += UInt64(frames)
+        rateMeasureFrames += UInt64(frames)
 
         if let resampler {
             let converted = resampler.process(interleaved)
@@ -250,6 +287,26 @@ final class ProcessTapCapture {
         } else {
             onAudio(interleaved, captureNs, targetSampleRate, channels)
         }
+    }
+
+    /// Measure the true delivery rate from frames/elapsed-host-time, snap to
+    /// the nearest standard rate, and reconfigure the pipeline around it.
+    private func healRate(nowNs: UInt64) {
+        let elapsedNs = nowNs - rateMeasureStartNs
+        guard elapsedNs > 500_000_000, rateMeasureFrames > 0 else { return }
+        let measured = Double(rateMeasureFrames) / (Double(elapsedNs) / 1e9)
+        let standards: [Double] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000]
+        let snapped = standards.min { abs($0 - measured) < abs($1 - measured) } ?? measured
+        let corrected = abs(snapped - measured) / snapped < 0.02 ? snapped : measured
+        log("tap IO rate corrected: nominal said \(Int(ioRate)) Hz, measured \(Int(measured)) Hz -> using \(Int(corrected)) Hz")
+        ioRate = corrected
+        configureResampler()
+        // Restart the timeline cleanly at the corrected rate.
+        anchorNs = nowNs
+        inputFramesSeen = 0
+        rateMeasureStartNs = nowNs
+        rateMeasureFrames = 0
+        reanchorCount = 0
     }
 
     // MARK: - Core Audio lookups
