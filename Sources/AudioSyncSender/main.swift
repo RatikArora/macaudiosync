@@ -8,7 +8,7 @@ import SyncCore
 struct SenderOptions {
     var port: UInt16 = 7805
     var mode: Mode = .tone(frequency: 440)
-    var bufferDelayMs = 750
+    var bufferDelayMs = 150
     var name = Host.current().localizedName ?? "MacAudioSync"
 
     enum Mode {
@@ -48,16 +48,22 @@ func parseSenderOptions() -> SenderOptions {
         options.port = port
     }
     if let b = takeValue("--buffer-ms") {
-        guard let ms = Int(b), (100...5000).contains(ms) else { fail("--buffer-ms must be 100–5000") }
+        guard let ms = Int(b), (20...5000).contains(ms) else { fail("--buffer-ms must be 20–5000") }
         options.bufferDelayMs = ms
     }
     if let n = takeValue("--name") { options.name = n }
     let capture = takeFlag("--capture")
-    if let f = takeValue("--tone") {
-        guard let freq = Double(f), freq > 0, freq < 20_000 else { fail("invalid --tone frequency \(f)") }
-        options.mode = .tone(frequency: freq)
-    } else if takeFlag("--tone") {
-        options.mode = .tone(frequency: 440)
+    if let i = args.firstIndex(of: "--tone") {
+        args.remove(at: i)
+        // Frequency value is optional: consume the next token only if it
+        // looks like a number (so `--tone --port 7806` keeps working).
+        if i < args.count, let freq = Double(args[i]) {
+            guard freq > 0, freq < 20_000 else { fail("invalid --tone frequency \(args[i])") }
+            args.remove(at: i)
+            options.mode = .tone(frequency: freq)
+        } else {
+            options.mode = .tone(frequency: 440)
+        }
     }
     if capture { options.mode = .capture }
     if !args.isEmpty { fail("unknown arguments: \(args.joined(separator: " "))") }
@@ -72,8 +78,10 @@ options:
                        permission; macOS prompts on first run)
   --tone [freq]        stream a test tone instead (default mode, 440 Hz)
   --port <port>        UDP port to listen on (default 7805)
-  --buffer-ms <ms>     playback delay budget, 100–5000 (default 750);
-                       larger = more network-jitter headroom, more latency
+  --buffer-ms <ms>     playback delay budget, 40–5000 (default 150);
+                       larger = more network-jitter headroom, more latency.
+                       Watch "margin=" in the receiver's stats to tune:
+                       healthy margin minus ~30ms is your safe buffer floor.
   --name <name>        Bonjour service name (default: computer name)
 """
 

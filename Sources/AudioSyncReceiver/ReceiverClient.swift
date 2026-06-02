@@ -8,6 +8,8 @@ final class ReceiverClient {
     let sync = ClockSynchronizer()
     let drift = DriftEstimator()
     let buffer = JitterBuffer()
+    /// How early audio arrives vs. its play deadline (latency headroom).
+    let margin = MarginTracker()
 
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "audiosync.recv.net")
@@ -57,13 +59,21 @@ final class ReceiverClient {
     // MARK: - Clock probes
 
     private func startClockProbes() {
-        // 4 probes/s: the synchronizer's min-RTT window converges within a
-        // couple of seconds and then keeps tracking drift; probes double as
+        // Startup burst: 20 probes/s for the first two seconds so playback
+        // can begin ~0.3 s after connecting (the synchronizer needs 5
+        // samples) with a well-filtered offset. Then drop to 4 probes/s,
+        // which is plenty to keep tracking drift; probes double as
         // keepalives so the sender doesn't expire us.
+        let burstProbes = 40
+        var probesSent = 0
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(250), leeway: .milliseconds(10))
+        timer.schedule(deadline: .now(), repeating: .milliseconds(50), leeway: .milliseconds(5))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
+            probesSent += 1
+            if probesSent == burstProbes {
+                timer.schedule(deadline: .now() + 0.25, repeating: .milliseconds(250), leeway: .milliseconds(10))
+            }
             let t1 = MonotonicClock.nowNs()
             self.connection.send(
                 content: Wire.encode(.clockRequest(clientSendNs: t1)),
@@ -111,7 +121,9 @@ final class ReceiverClient {
             }
         case .audio(let chunk):
             audioPacketsReceived &+= 1
-            buffer.insert(chunk)
+            if buffer.insert(chunk), let masterNow = sync.masterNs(forClientNs: receivedNs) {
+                margin.add(marginNs: Int64(bitPattern: chunk.playAtMasterNs &- masterNow))
+            }
         case .hello, .clockRequest:
             break // server-to-client only carries replies and audio
         }

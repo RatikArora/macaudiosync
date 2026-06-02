@@ -80,8 +80,8 @@ audiosync-send:
   --capture            stream the Mac's system audio
   --tone [freq]        stream a 440 Hz test tone instead (default mode)
   --port <port>        UDP port (default 7805)
-  --buffer-ms <ms>     playback delay budget 100–5000 (default 750):
-                       jitter headroom ↑, latency ↑
+  --buffer-ms <ms>     playback delay budget 20–5000 (default 150):
+                       jitter headroom ↑, latency ↑ (see "Latency" below)
   --name <name>        Bonjour service name
 
 audiosync-recv:
@@ -118,6 +118,40 @@ audiosync-recv:
    dropped, stragglers behind the playhead rejected, consumed chunks freed
    each render pass. The `--buffer-ms` delay budget absorbs network jitter:
    every receiver plays equally "late", which is what keeps them together.
+
+## Latency: what it is and how to tune it
+
+End-to-end delay ≈ `--buffer-ms` + a fixed ~25–40 ms stack floor
+(ScreenCaptureKit delivers audio in ~10 ms blocks; the receiver's render
+quantum and DAC add ~10–25 ms). The buffer is the only part you control —
+it exists purely to absorb network jitter, and every receiver pays it
+equally, which is exactly what keeps them in sync.
+
+**Tune it with the receiver's `margin=` stat** (printed every second): the
+minimum arrival headroom of the last second. If margin stays comfortably
+positive, you can cut the sender's `--buffer-ms` by roughly
+`margin − 30 ms`. If it dips near zero or `late=` counts appear, raise it.
+
+Measured on loopback (this codebase, debug build): stable 100% fill with
+zero dropouts down to `--buffer-ms 25`. Realistic guidance:
+
+| Network                  | suggested --buffer-ms |
+|--------------------------|-----------------------|
+| Wired Ethernet, idle LAN | 40–60                 |
+| Good 5 GHz Wi-Fi         | 100–150 (default)     |
+| Congested / 2.4 GHz Wi-Fi| 250–500               |
+
+Two different "latencies" matter — don't confuse them:
+
+- **Receiver↔receiver skew** (what makes multi-room sound tight): governed
+  by clock sync, not the buffer. Measured ~15 µs on loopback, sub-ms on a
+  LAN. This is the number that counts, and it's already at the limit of
+  what speakers/room acoustics can reveal (sound takes ~3 ms just to travel
+  1 m of air).
+- **Sender→receiver delay** (the buffer): only perceptible when comparing
+  against the sender's *own* speakers, or as lip-sync offset against video.
+  At 100–150 ms, lip-sync is on the edge of noticeable; for music in
+  another room it is irrelevant.
 
 ## Testing
 

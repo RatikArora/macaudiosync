@@ -109,8 +109,20 @@ func startStatsTimer() {
         let driftPpm = client.drift.driftPpm.map { String(format: "%.1f", $0) } ?? "—"
         let bufferedMs = client.buffer.bufferedSpanNs / 1_000_000
         let total = max(1, filled + silent + unsynced)
+        // Minimum arrival margin this second = latency headroom. If it stays
+        // comfortably positive, the sender's --buffer-ms can come down by
+        // about that amount; near zero (or late>0) means buffer too small.
+        var marginText = "—"
+        if let m = client.margin.drain() {
+            marginText = String(format: "%.0f", Double(m.minNs) / 1e6)
+            if m.minNs < 15_000_000 {
+                marginText += "ms (LOW — raise sender --buffer-ms)"
+            } else {
+                marginText += "ms"
+            }
+        }
         log("sync offset=\(offsetMs)ms rtt=\(rttUs)µs drift=\(driftPpm)ppm | " +
-            "buffered=\(bufferedMs)ms filled=\(filled) silent=\(silent) unsynced=\(unsynced) " +
+            "buffered=\(bufferedMs)ms margin=\(marginText) filled=\(filled) silent=\(silent) unsynced=\(unsynced) " +
             "(\(filled * 100 / total)% fill) | pkts=\(client.audioPacketsReceived) " +
             "dup=\(client.buffer.duplicateCount) late=\(client.buffer.lateCount) " +
             "decodeErr=\(client.decodeErrors)")
