@@ -1,0 +1,158 @@
+# CLAUDE.md — MacAudioSync operator & developer guide
+
+Multi-MacBook synced audio: one Mac (the **sender**) captures its system
+audio and streams it over the LAN; every other Mac (a **receiver**) plays it
+back aligned to the sender's master clock (sub-ms receiver-to-receiver skew).
+Read README.md for the architecture; this file is what *you* (Claude) need
+to operate, debug, and extend it on whichever Mac you're running on.
+
+## Which role is this Mac?
+
+- **Sender** — this Mac is the one playing the music/video (YouTube,
+  Spotify, …). There is exactly ONE sender.
+- **Receiver** — this Mac should act as a speaker. Any number of these.
+- A Mac can be both (receiver pointed at `127.0.0.1` while sending) — that's
+  how you keep the sender's own speakers in sync with everyone else
+  (mute nothing; just don't double-play: see "Same room" below).
+
+Ask the user which role this Mac plays if it isn't obvious from their request.
+
+## First-time setup (either role)
+
+```sh
+git clone https://github.com/RatikArora/macaudiosync.git   # if not present
+cd macaudiosync
+git pull                  # ALWAYS pull first — the other Macs push fixes
+swift build -c release    # needs Command Line Tools; binaries in .build/release/
+```
+
+Both Macs must be on the same Wi-Fi/LAN. macOS may prompt for
+**Local Network** access on first run — the user must allow it.
+
+## Sender steps
+
+1. Permission (one-time): System Settings → Privacy & Security →
+   **Screen Recording** → enable the terminal app. Without it, `--capture`
+   fails with SCStreamErrorDomain **-3801** ("user declined TCCs") — that
+   error always means this permission, tell the user to grant it and rerun.
+2. Start (run in background, keep the shell):
+   ```sh
+   .build/release/audiosync-send --capture
+   ```
+3. Confirm from its log, in order:
+   - `listening on UDP port 7805, Bonjour "<name>" (_audiosync._udp)`
+   - `system audio capture started (48000 Hz, 2ch)`
+   - `clients=N packets/s=~300×N` once receivers join (`clients=0
+     packets/s=0` just means nobody has connected yet — not an error).
+4. User plays audio; that's it.
+
+Useful flags: `--tone [freq]` (test signal instead of capture),
+`--port <p>`, `--buffer-ms <ms>` (latency vs jitter headroom — see tuning),
+`--name <bonjour name>`.
+
+## Receiver steps
+
+1. Start:
+   ```sh
+   .build/release/audiosync-recv            # Bonjour auto-discovery
+   .build/release/audiosync-recv --connect <sender>.local:7805   # if mDNS blocked
+   ```
+2. Confirm from its log:
+   - `found sender: …` then `connected to …`
+   - `playback engine started (48000 Hz, 2ch)`
+   - stats line each second — healthy looks like:
+     `sync offset=0.0xx ms rtt<1000µs … margin=NNms … (100% fill) … late=0 decodeErr=0`
+3. Audio starts ~0.3 s after connect (clock-sync warmup burst).
+
+Test/CI flags: `--headless` (full pipeline, no speakers), `--exit-after <s>`.
+
+### Reading the receiver stats line
+
+| field | meaning | healthy |
+|---|---|---|
+| `offset` | master-clock offset estimate | stable, sub-ms changes |
+| `rtt` | best probe round-trip | <1 ms LAN, <10 ms Wi-Fi |
+| `drift` | crystal skew estimate (ppm) | settles within ±50 |
+| `buffered` | audio queued ahead | ≈ sender `--buffer-ms` |
+| `margin` | min arrival headroom last second | > 30 ms; `LOW` warning printed under 15 ms |
+| `fill` | % of frames actually played | 100% |
+| `late` | chunks that arrived too late | 0 (occasional 1–2 on Wi-Fi ok) |
+| `decodeErr` | malformed packets | 0 |
+
+### Latency tuning (sender's `--buffer-ms`, default 150)
+
+End-to-end delay ≈ buffer-ms + ~25–40 ms fixed stack floor. Watch the
+receiver's `margin=`: you can lower buffer-ms by about `margin − 30 ms`.
+Raise it if `late>0` or fill < 100%. Wired LAN: 40–60. Good 5 GHz Wi-Fi:
+100–150. Congested Wi-Fi: 250–500. Sub-10 ms is NOT achievable (capture
+blocks + DAC alone exceed it) — don't promise it; receiver↔receiver skew is
+already sub-ms, which is what audible sync quality depends on.
+
+### Same room / echo
+
+Receivers play `--buffer-ms` behind the sender's own speakers. If sender and
+receivers are within earshot: mute the sender's speakers (capture still
+works — SCK taps audio before output volume), or also run a local receiver
+on the sender Mac (`audiosync-recv --connect 127.0.0.1:7805`) and mute the
+original… which needs the not-yet-built process-tap mode (see Roadmap).
+
+## Troubleshooting quick table
+
+| symptom | cause / fix |
+|---|---|
+| `-3801` on sender | Screen Recording permission missing (see Sender §1) |
+| receiver stuck `browsing for senders` | mDNS blocked → use `--connect`; check both Macs on same network; check macOS Local Network permission |
+| `pkts=0` but sync works | audio source died on sender — check sender log |
+| `late` climbing / fill <100% | buffer too small for this network → raise `--buffer-ms` |
+| `decodeErr` nonzero | version mismatch between Macs → `git pull` + rebuild BOTH |
+| port in use | another sender instance: `pkill -f audiosync-send` |
+
+## Development rules (keep everything up to date)
+
+1. **Pull before touching anything; push after every change.** The Macs
+   share state only through this repo (github.com/RatikArora/macaudiosync).
+   After changing behavior, flags, stats format, or procedures: update
+   README.md AND this file in the same commit.
+2. **Wire compatibility:** if you change `Wire`/packet layout, bump
+   `Wire.version` — receivers reject mismatched versions as `decodeErr`,
+   and every Mac must be rebuilt. Avoid breaking it casually.
+3. **Tests:** run `./run-tests.sh` (NOT bare `swift test` — only Command
+   Line Tools are installed, so XCTest is absent and Swift Testing needs
+   the framework paths the script adds). All tests must pass before pushing.
+   Quick live smoke test (no speakers):
+   ```sh
+   .build/debug/audiosync-send --tone &
+   .build/debug/audiosync-recv --browse --headless --exit-after 10
+   # expect: 100% fill, silent=0, late=0, offset ~0.01ms; then pkill -f audiosync-
+   ```
+4. **Code layout:** `Sources/SyncCore` = pure logic (clock sync, jitter
+   buffer, timeline renderer, wire protocol) — fully unit-tested, no
+   network/audio imports; keep it that way. `Sources/AudioSyncSender`,
+   `Sources/AudioSyncReceiver` = thin Network.framework/AVFoundation/
+   ScreenCaptureKit shells.
+5. **Known macOS gotchas (cost real debugging time):**
+   - Objects created inside switch-case blocks in `main.swift` top-level
+     code are RELEASED when the block ends — dispatch timers/NWBrowser
+     silently cancel. Keep long-lived objects in top-level globals.
+   - AVAudioEngine's mixer rejects interleaved source formats (error
+     -10868): AVAudioSourceNode must use `standardFormatWithSampleRate`
+     (deinterleaved) and the render callback deinterleaves scratch.
+   - SCK system-audio capture needs Screen Recording TCC, delivers Float32
+     possibly planar OR interleaved — both handled in SystemAudioCapture.
+   - All timestamps are `CLOCK_UPTIME_RAW` ns (== mach host time == Core
+     Audio host clock). Never mix in wall-clock time.
+6. **Core invariant:** receivers never "play the next packet"; every render
+   asks "what does the master timeline put in this window?" Alignment is
+   recomputed from timestamps every callback so errors can't accumulate.
+   The end-to-end tests assert bit-exact reproduction — keep them passing.
+
+## Roadmap (next features, in value order)
+
+1. **Process-tap capture** (`AudioHardwareCreateProcessTap` +
+   `CATapDescription.muteBehavior = .mutedWhenTapped`, macOS 14.4+): capture
+   while muting the original output, then the sender plays through a local
+   synced receiver too → zero perceived latency in the same room.
+2. Device-latency calibration (`kAudioDevicePropertyLatency`) per receiver.
+3. Micro-resampler driven by `DriftEstimator` (smooth rate-matching instead
+   of frame repeat/skip at chunk boundaries).
+4. Opus compression for WAN; DTLS if streaming beyond the home LAN.
