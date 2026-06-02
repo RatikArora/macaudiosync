@@ -17,6 +17,17 @@ to operate, debug, and extend it on whichever Mac you're running on.
 
 Ask the user which role this Mac plays if it isn't obvious from their request.
 
+## The app
+
+`./make-app.sh` builds `dist/MacAudioSync.app` — a universal (arm64+x86_64)
+SwiftUI shell in `Sources/MacAudioSyncApp` that bundles and drives the two
+CLI engines as child processes (it contains NO audio/network code; it parses
+the engines' log lines for status — if you change log formats, update
+`EngineProcess.parse`). Receiver runs with auto-restart: any engine death →
+relaunch after 2 s until the user stops it. Sender auto-selects `--party`
+(macOS 14.2+) or `--capture` (older). The app is the preferred thing to give
+non-technical users; `dist/` is gitignored, rebuild after every engine change.
+
 ## First-time setup (either role)
 
 ```sh

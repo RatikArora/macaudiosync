@@ -23,7 +23,25 @@ Sender Mac (master)                     Each receiver Mac
                                        └──────────────────────────────┘
 ```
 
-## Build
+## The app (easiest way)
+
+```sh
+./make-app.sh        # builds dist/MacAudioSync.app — universal (Apple Silicon + Intel)
+```
+
+Double-click `MacAudioSync.app`, pick **Send** on the Mac playing the music
+and **Receive** on every other Mac. That's the whole flow. Share the app by
+AirDropping/zipping it to any Mac (macOS 13+); first launch on another Mac
+needs right-click → Open (it's ad-hoc signed, no developer account).
+
+- Sender uses party mode automatically (zero perceived latency); Macs older
+  than 14.2 fall back to capture mode.
+- Receivers auto-discover the sender and **auto-reconnect forever** if the
+  sender restarts or Wi-Fi blips — the flow doesn't break.
+- The app drives the same engines as the CLI below; permission prompts
+  (System Audio Recording, Local Network) belong to the app itself.
+
+## Build (CLI)
 
 Requires macOS 13+ and the Swift toolchain (Xcode or Command Line Tools).
 

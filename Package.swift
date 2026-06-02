@@ -27,6 +27,9 @@ let package = Package(
         .target(name: "AudioPipeline", dependencies: ["SyncCore"], swiftSettings: v5),
         .executableTarget(name: "AudioSyncSender", dependencies: ["SyncCore", "AudioPipeline"], swiftSettings: v5),
         .executableTarget(name: "AudioSyncReceiver", dependencies: ["SyncCore", "AudioPipeline"], swiftSettings: v5),
+        // Thin SwiftUI shell: drives the two CLI executables as child
+        // processes and shows their status. No audio/network code of its own.
+        .executableTarget(name: "MacAudioSyncApp", swiftSettings: v5),
         .testTarget(name: "SyncCoreTests", dependencies: ["SyncCore"], swiftSettings: v5),
     ]
 )
