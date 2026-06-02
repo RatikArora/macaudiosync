@@ -26,6 +26,12 @@ final class ReceiverClient {
     private(set) var audioPacketsReceived: UInt64 = 0
     private(set) var clockRepliesReceived: UInt64 = 0
     private(set) var decodeErrors: UInt64 = 0
+    /// Consecutive-sequence chunks whose timestamps don't abut (>30 µs gap
+    /// or overlap). Nonzero means the SENDER's capture timestamps jitter —
+    /// audible as crackle even at 100% fill.
+    private(set) var timestampJitterCount: UInt64 = 0
+    private var lastSequence: UInt32 = 0
+    private var lastEndNs: UInt64 = 0
 
     /// UDP parameters tuned for low-jitter audio: voice-class QoS (Wi-Fi
     /// WMM priority, no power-save buffering) and optional peer-to-peer
@@ -137,6 +143,12 @@ final class ReceiverClient {
             }
         case .audio(let chunk):
             audioPacketsReceived &+= 1
+            if chunk.sequence == lastSequence &+ 1 {
+                let deltaNs = Int64(bitPattern: chunk.playAtMasterNs &- lastEndNs)
+                if deltaNs.magnitude > 30_000 { timestampJitterCount &+= 1 }
+            }
+            lastSequence = chunk.sequence
+            lastEndNs = chunk.endMasterNs
             if buffer.insert(chunk), let masterNow = sync.masterNs(forClientNs: receivedNs) {
                 margin.add(marginNs: Int64(bitPattern: chunk.playAtMasterNs &- masterNow))
             }

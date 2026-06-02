@@ -92,6 +92,7 @@ Test/CI flags: `--headless` (full pipeline, no speakers), `--exit-after <s>`.
 | `fill` | % of frames actually played | 100% |
 | `late` | chunks that arrived too late | 0 (occasional 1–2 on Wi-Fi ok) |
 | `peak` | max |sample| rendered last second | >0 when audio is actually playing; 0.00 = silence on the wire (nothing playing on sender) |
+| `tsJit` | consecutive chunks whose timestamps don't abut (>30µs) | 0 — ALWAYS. Nonzero = sender capture timestamps jitter → crackle at 100% fill; bug on the sender side (see gotcha below) |
 | `decodeErr` | malformed packets | 0 |
 
 ### Latency tuning (sender's `--buffer-ms`, default 150)
@@ -171,6 +172,13 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
      possibly planar OR interleaved — both handled in SystemAudioCapture.
    - All timestamps are `CLOCK_UPTIME_RAW` ns (== mach host time == Core
      Audio host clock). Never mix in wall-clock time.
+   - NEVER stamp captured audio with per-callback IO host timestamps — they
+     jitter ±frames between callbacks, so chunks overlap/gap at every
+     boundary = continuous crackle at 100% fill (`tsJit` counts this).
+     Synthesize timestamps from a FRAME COUNTER anchored once to the host
+     clock with a gentle servo (see ProcessTapCapture.process). Also: do no
+     heavy work (resample/encode/send) inside a Core Audio IO callback —
+     hop to a serial queue.
 6. **Core invariant:** receivers never "play the next packet"; every render
    asks "what does the master timeline put in this window?" Alignment is
    recomputed from timestamps every callback so errors can't accumulate.

@@ -27,6 +27,22 @@ final class ProcessTapCapture {
     private var resampler: LinearResampler?
     private var tapASBD = AudioStreamBasicDescription()
     private let queue = DispatchQueue(label: "audiosync.sender.tap")
+    /// Resampling, wire encoding and network sends happen here, NOT on the
+    /// IO callback — overrunning the audio cycle budget glitches the device
+    /// for every process on the system.
+    private let processQueue = DispatchQueue(label: "audiosync.sender.tap.process")
+
+    // Timestamp synthesis (all touched only on processQueue).
+    //
+    // IO-callback host timestamps jitter by a few frames between callbacks;
+    // stamping chunks with them directly makes consecutive chunks overlap or
+    // gap by ±1–2 frames — audible as continuous crackle. Instead we count
+    // frames (exactly contiguous by construction, driven by the device
+    // clock) anchored to the host clock once, with a gentle servo so the
+    // anchor tracks long-term device-vs-host clock drift without ever
+    // jumping.
+    private var anchorNs: UInt64 = 0
+    private var inputFramesSeen: UInt64 = 0
 
     init(targetSampleRate: Double = 48_000, onAudio: @escaping Block) {
         self.targetSampleRate = targetSampleRate
@@ -154,20 +170,42 @@ final class ProcessTapCapture {
         }
 
         let ts = time.pointee
-        let hostNs: UInt64
-        if ts.mFlags.contains(.hostTimeValid), ts.mHostTime > 0 {
-            hostNs = MonotonicClock.ns(fromHostTicks: ts.mHostTime)
-        } else {
-            hostNs = MonotonicClock.nowNs()
+        let hostTimeValid = ts.mFlags.contains(.hostTimeValid) && ts.mHostTime > 0
+        let hostNs = hostTimeValid ? MonotonicClock.ns(fromHostTicks: ts.mHostTime) : MonotonicClock.nowNs()
+
+        // Get off the IO path immediately; everything else is async.
+        processQueue.async { [weak self] in
+            self?.process(interleaved, frames: frames, channels: channels, hostNs: hostNs, hostTimeValid: hostTimeValid)
         }
+    }
+
+    private func process(_ interleaved: [Float], frames: Int, channels: Int, hostNs: UInt64, hostTimeValid: Bool) {
+        let inputRate = tapASBD.mSampleRate
+
+        if anchorNs == 0 {
+            anchorNs = hostNs
+        } else if hostTimeValid {
+            // Servo: nudge the anchor toward the host clock so frame-counter
+            // time can't drift away over hours (device vs host crystal ppm).
+            // Gain 1/128 with a ±200 µs/callback clamp ≈ converges over a few
+            // seconds, individual adjustments far below one frame period.
+            let expectedNs = anchorNs + UInt64(Double(inputFramesSeen) / inputRate * 1e9)
+            let errorNs = Int64(bitPattern: hostNs &- expectedNs)
+            let adjustment = max(-200_000, min(200_000, errorNs / 128))
+            anchorNs = UInt64(Int64(anchorNs) + adjustment)
+        }
+
+        // Contiguous capture timestamp for this block, on the frame grid.
+        let captureNs = anchorNs + UInt64(Double(inputFramesSeen) / inputRate * 1e9)
+        inputFramesSeen += UInt64(frames)
 
         if let resampler {
             let converted = resampler.process(interleaved)
             if !converted.isEmpty {
-                onAudio(converted, hostNs, targetSampleRate, channels)
+                onAudio(converted, captureNs, targetSampleRate, channels)
             }
         } else {
-            onAudio(interleaved, hostNs, targetSampleRate, channels)
+            onAudio(interleaved, captureNs, targetSampleRate, channels)
         }
     }
 

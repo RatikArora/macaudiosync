@@ -134,7 +134,7 @@ func startStatsTimer() {
             "buffered=\(bufferedMs)ms margin=\(marginText) filled=\(filled) silent=\(silent) unsynced=\(unsynced) " +
             "(\(filled * 100 / total)% fill) peak=\(String(format: "%.2f", peak)) | pkts=\(client.audioPacketsReceived) " +
             "dup=\(client.buffer.duplicateCount) late=\(client.buffer.lateCount) " +
-            "decodeErr=\(client.decodeErrors)")
+            "tsJit=\(client.timestampJitterCount) decodeErr=\(client.decodeErrors)")
     }
     timer.resume()
     statsTimer = timer
