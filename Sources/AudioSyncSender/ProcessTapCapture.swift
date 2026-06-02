@@ -80,10 +80,12 @@ final class ProcessTapCapture {
             throw RuntimeError("unexpected tap format")
         }
         if tapASBD.mSampleRate != targetSampleRate {
+            // We normalize every callback to interleaved stereo before
+            // resampling, so the resampler is always 2-channel.
             resampler = LinearResampler(
                 sourceRate: tapASBD.mSampleRate,
                 targetRate: targetSampleRate,
-                channels: Int(tapASBD.mChannelsPerFrame)
+                channels: 2
             )
         }
 
@@ -141,31 +143,62 @@ final class ProcessTapCapture {
 
     // MARK: - IO
 
+    private var loggedLayout = false
+
     private func handleInput(_ inputData: UnsafePointer<AudioBufferList>, time: UnsafePointer<AudioTimeStamp>) {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
-        let channels = Int(tapASBD.mChannelsPerFrame)
-        let isInterleaved = tapASBD.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
-
-        // Frame count from the first buffer's byte size.
         guard let first = buffers.first, first.mData != nil else { return }
+
+        // Derive the layout from the ACTUAL buffer list (`mNumberChannels`
+        // per buffer), never from the ASBD's interleaved flag: on some
+        // macOS builds the tap's nominal format claims non-interleaved while
+        // the IO proc delivers a single interleaved buffer. Trusting the
+        // flag doubles the frame count — the timeline then runs 2× fast
+        // (buffered/margin run away by seconds per second on receivers,
+        // tsJit climbs at the block rate) and channels scramble. Seen live
+        // on Ratik's MacBook Pro while the Air was fine.
+        let sourceChannels: Int
         let frames: Int
-        if isInterleaved {
-            frames = Int(first.mDataByteSize) / 4 / channels
+        if buffers.count == 1 {
+            sourceChannels = max(1, Int(first.mNumberChannels))
+            frames = Int(first.mDataByteSize) / 4 / sourceChannels
         } else {
-            frames = Int(first.mDataByteSize) / 4
+            sourceChannels = buffers.count // one buffer per channel
+            frames = Int(first.mDataByteSize) / 4 / max(1, Int(first.mNumberChannels))
         }
         guard frames > 0 else { return }
 
-        var interleaved = [Float](repeating: 0, count: frames * channels)
-        if isInterleaved, let data = first.mData {
+        if !loggedLayout {
+            loggedLayout = true
+            let claimsInterleaved = tapASBD.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
+            log("tap IO layout: \(buffers.count) buffer(s) × \(first.mNumberChannels)ch, \(frames) frames/callback " +
+                "(nominal format: \(Int(tapASBD.mSampleRate)) Hz \(tapASBD.mChannelsPerFrame)ch interleaved=\(claimsInterleaved))")
+        }
+
+        // Normalize to interleaved STEREO — the wire format receivers play.
+        var interleaved = [Float](repeating: 0, count: frames * 2)
+        if buffers.count == 1, let data = first.mData {
             let ptr = data.assumingMemoryBound(to: Float.self)
-            for i in 0..<(frames * channels) { interleaved[i] = ptr[i] }
+            if sourceChannels == 1 {
+                for f in 0..<frames {
+                    let v = ptr[f]
+                    interleaved[f * 2] = v
+                    interleaved[f * 2 + 1] = v
+                }
+            } else {
+                let rightOffset = min(1, sourceChannels - 1)
+                for f in 0..<frames {
+                    interleaved[f * 2] = ptr[f * sourceChannels]
+                    interleaved[f * 2 + 1] = ptr[f * sourceChannels + rightOffset]
+                }
+            }
         } else {
-            for (ch, buffer) in buffers.enumerated() where ch < channels {
+            for ch in 0..<2 {
+                let buffer = buffers[min(ch, buffers.count - 1)]
                 guard let data = buffer.mData else { continue }
                 let ptr = data.assumingMemoryBound(to: Float.self)
                 let n = min(frames, Int(buffer.mDataByteSize) / 4)
-                for frame in 0..<n { interleaved[frame * channels + ch] = ptr[frame] }
+                for f in 0..<n { interleaved[f * 2 + ch] = ptr[f] }
             }
         }
 
@@ -175,7 +208,7 @@ final class ProcessTapCapture {
 
         // Get off the IO path immediately; everything else is async.
         processQueue.async { [weak self] in
-            self?.process(interleaved, frames: frames, channels: channels, hostNs: hostNs, hostTimeValid: hostTimeValid)
+            self?.process(interleaved, frames: frames, channels: 2, hostNs: hostNs, hostTimeValid: hostTimeValid)
         }
     }
 
@@ -185,14 +218,24 @@ final class ProcessTapCapture {
         if anchorNs == 0 {
             anchorNs = hostNs
         } else if hostTimeValid {
-            // Servo: nudge the anchor toward the host clock so frame-counter
-            // time can't drift away over hours (device vs host crystal ppm).
-            // Gain 1/128 with a ±200 µs/callback clamp ≈ converges over a few
-            // seconds, individual adjustments far below one frame period.
             let expectedNs = anchorNs + UInt64(Double(inputFramesSeen) / inputRate * 1e9)
             let errorNs = Int64(bitPattern: hostNs &- expectedNs)
-            let adjustment = max(-200_000, min(200_000, errorNs / 128))
-            anchorNs = UInt64(Int64(anchorNs) + adjustment)
+            if errorNs.magnitude > 100_000_000 {
+                // Frame-counter time has diverged >100 ms from the host
+                // clock: the nominal rate or layout must be wrong. Re-anchor
+                // hard (one audible blip) instead of drifting forever, and
+                // say so — this should never fire; if it does, the log line
+                // is the bug report.
+                log("WARNING: tap timeline diverged \(errorNs / 1_000_000) ms from host clock — re-anchoring (rate/layout mismatch?)")
+                anchorNs = UInt64(Int64(anchorNs) + errorNs)
+            } else {
+                // Servo: nudge the anchor toward the host clock so
+                // frame-counter time can't drift away over hours (device vs
+                // host crystal ppm). Gain 1/128 with a ±200 µs/callback
+                // clamp; individual adjustments far below one frame period.
+                let adjustment = max(-200_000, min(200_000, errorNs / 128))
+                anchorNs = UInt64(Int64(anchorNs) + adjustment)
+            }
         }
 
         // Contiguous capture timestamp for this block, on the frame grid.

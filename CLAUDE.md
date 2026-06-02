@@ -134,6 +134,7 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
 | `late` climbing / fill <100% | buffer too small for this network → raise `--buffer-ms` |
 | `decodeErr` nonzero | version mismatch between Macs → `git pull` + rebuild BOTH |
 | port in use | another sender instance: `pkill -f audiosync-send` |
+| `buffered`/`margin` grow by seconds per second, `tsJit` climbs ~190/s, garbled audio | sender's tap delivered a different buffer layout than its nominal format claimed (frame count miscomputed → timeline runs 2× fast). Fixed 2026-06-03 by deriving layout from the buffer list's `mNumberChannels`; if it recurs, check the sender's one-time `tap IO layout:` log line and any `WARNING: tap timeline diverged` lines |
 
 ## Development rules (keep everything up to date)
 
