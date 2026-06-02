@@ -14,6 +14,16 @@ final class EngineProcess: ObservableObject {
     @Published var connectedTo: String?
     @Published var logLines: [String] = []
     @Published var errorText: String?
+    /// Clock-sync stability: spread of recent offset estimates, in µs.
+    /// This is the headline number — how tightly this Mac tracks the
+    /// sender's clock.
+    @Published var syncJitterUs: Int?
+    /// Network round-trip of the best clock probe, µs.
+    @Published var rttUs: Int?
+    /// Arrival headroom (ms): how early audio lands vs its deadline.
+    @Published var marginMs: Int?
+
+    private var recentOffsetsMs: [Double] = []
 
     /// When true (receiver), an engine that dies for any reason — Wi-Fi
     /// drop, sender restart, crash — is relaunched automatically after a
@@ -73,6 +83,10 @@ final class EngineProcess: ObservableObject {
         fillPercent = nil
         peak = 0
         connectedTo = nil
+        syncJitterUs = nil
+        rttUs = nil
+        marginMs = nil
+        recentOffsetsMs = []
         statusText = "Starting…"
 
         let process = Process()
@@ -169,6 +183,22 @@ final class EngineProcess: ObservableObject {
         }
         if let p = capture(#"peak=([0-9.]+)"#, in: line) {
             peak = Double(p) ?? peak
+        }
+        if let rtt = capture(#"rtt=(\d+)µs"#, in: line) {
+            rttUs = Int(rtt)
+        }
+        if let margin = capture(#"margin=(-?\d+)ms"#, in: line) {
+            marginMs = Int(margin)
+        }
+        if let offset = capture(#"offset=(-?[0-9.]+)ms"#, in: line), let value = Double(offset) {
+            // The absolute offset is just the two Macs' boot-time difference;
+            // its VARIATION over the last few seconds is the sync stability.
+            recentOffsetsMs.append(value)
+            if recentOffsetsMs.count > 12 { recentOffsetsMs.removeFirst() }
+            if recentOffsetsMs.count >= 4,
+               let lo = recentOffsetsMs.min(), let hi = recentOffsetsMs.max() {
+                syncJitterUs = max(1, Int(((hi - lo) / 2 * 1000).rounded()))
+            }
         }
 
         // Failures worth surfacing prominently
