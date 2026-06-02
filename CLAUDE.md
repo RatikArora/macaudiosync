@@ -88,6 +88,18 @@ Raise it if `late>0` or fill < 100%. Wired LAN: 40–60. Good 5 GHz Wi-Fi:
 blocks + DAC alone exceed it) — don't promise it; receiver↔receiver skew is
 already sub-ms, which is what audible sync quality depends on.
 
+### Wi-Fi dropout bursts (observed in production 2026-06-03)
+
+Symptom: steady 100% fill with margin ~75 ms, but every 10–30 s one second
+shows `margin=…LOW`, `late` +60–100, fill 65–90% → audible break. Cause:
+macOS Wi-Fi power-save/scan bursts delaying packets 70–150 ms. Fixes in
+order: (1) wire the Macs (Ethernet or USB-C cable → buffer 40–60 ms, zero
+dropouts); (2) QoS voice-class + AWDL p2p are ON by default — compare with
+`--no-p2p` on BOTH sides if things get worse; (3) raise `--buffer-ms` above
+the worst burst (250 usually silences busy Wi-Fi). If `pkts` stops climbing
+and `buffered` drains to 0, the SENDER died — restart it (keep it with
+`caffeinate -i` so the Mac doesn't sleep it).
+
 ### Same room / echo
 
 Receivers play `--buffer-ms` behind the sender's own speakers. If sender and

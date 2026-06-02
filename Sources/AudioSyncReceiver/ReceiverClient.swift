@@ -22,14 +22,25 @@ final class ReceiverClient {
     private(set) var clockRepliesReceived: UInt64 = 0
     private(set) var decodeErrors: UInt64 = 0
 
-    init(endpoint: NWEndpoint, onReady: @escaping () -> Void) {
-        self.connection = NWConnection(to: endpoint, using: .udp)
+    /// UDP parameters tuned for low-jitter audio: voice-class QoS (Wi-Fi
+    /// WMM priority, no power-save buffering) and optional peer-to-peer
+    /// (AWDL direct Mac-to-Mac link, bypassing the router).
+    static func parameters(peerToPeer: Bool) -> NWParameters {
+        let params = NWParameters.udp
+        params.serviceClass = .interactiveVoice
+        params.includePeerToPeer = peerToPeer
+        return params
+    }
+
+    init(endpoint: NWEndpoint, peerToPeer: Bool = true, onReady: @escaping () -> Void) {
+        self.connection = NWConnection(to: endpoint, using: Self.parameters(peerToPeer: peerToPeer))
         self.onReady = onReady
     }
 
-    convenience init(host: String, port: UInt16, onReady: @escaping () -> Void) {
+    convenience init(host: String, port: UInt16, peerToPeer: Bool = true, onReady: @escaping () -> Void) {
         self.init(
             endpoint: .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!),
+            peerToPeer: peerToPeer,
             onReady: onReady
         )
     }

@@ -141,6 +141,22 @@ zero dropouts down to `--buffer-ms 25`. Realistic guidance:
 | Good 5 GHz Wi-Fi         | 100–150 (default)     |
 | Congested / 2.4 GHz Wi-Fi| 250–500               |
 
+**Wi-Fi jitter bursts.** Real-world macOS Wi-Fi periodically delays packet
+bursts by 70–150 ms (power-save buffering, background AWDL/location scans) —
+seen as occasional `margin=…LOW` + `late` spikes + a dropout, every
+10–30 s, even when the average margin looks fine. Mitigations, in order of
+effectiveness:
+
+1. **Wire the Macs**: Ethernet, or a USB-C/Thunderbolt cable between them
+   (creates a direct network link). Buffer can then drop to 40–60 ms and
+   dropouts disappear entirely.
+2. **Built-in QoS + peer-to-peer** (on by default since v1.1): packets are
+   marked voice-class (Wi-Fi WMM priority, exempt from power-save
+   buffering) and the AWDL direct Mac-to-Mac link is enabled. If audio gets
+   *worse* on your network, try `--no-p2p` on both sides.
+3. **Raise `--buffer-ms`** until the `late` counter stops growing — set it
+   above your worst observed burst (typically 250 on busy Wi-Fi).
+
 Two different "latencies" matter — don't confuse them:
 
 - **Receiver↔receiver skew** (what makes multi-room sound tight): governed

@@ -10,6 +10,7 @@ struct ReceiverOptions {
     var target: Target = .browse
     var headless = false
     var exitAfterSeconds: Int? = nil
+    var peerToPeer = true
 
     enum Target {
         case browse
@@ -50,6 +51,7 @@ func parseReceiverOptions() -> ReceiverOptions {
     }
     if takeFlag("--browse") { options.target = .browse }
     options.headless = takeFlag("--headless")
+    if takeFlag("--no-p2p") { options.peerToPeer = false }
     if let e = takeValue("--exit-after") {
         guard let s = Int(e), s > 0 else { fail("invalid --exit-after \(e)") }
         options.exitAfterSeconds = s
@@ -67,6 +69,8 @@ options:
   --headless             run the full pipeline but don't open the speakers
                          (for testing); prints fill statistics
   --exit-after <secs>    exit automatically after N seconds (for testing)
+  --no-p2p               disable the peer-to-peer (AWDL) link; use only the
+                         router (try if audio gets worse with p2p enabled)
 """
 
 let options = parseReceiverOptions()
@@ -141,14 +145,17 @@ func scheduleExitIfRequested() {
 
 switch options.target {
 case .hostPort(let host, let port):
-    client = ReceiverClient(host: host, port: port) {
+    client = ReceiverClient(host: host, port: port, peerToPeer: options.peerToPeer) {
         startPipeline()
     }
     client.start()
 
 case .browse:
     log("browsing for senders (_audiosync._udp)...")
-    let nwBrowser = NWBrowser(for: .bonjour(type: "_audiosync._udp", domain: nil), using: .udp)
+    let nwBrowser = NWBrowser(
+        for: .bonjour(type: "_audiosync._udp", domain: nil),
+        using: ReceiverClient.parameters(peerToPeer: options.peerToPeer)
+    )
     browser = nwBrowser
     var connected = false
     nwBrowser.browseResultsChangedHandler = { results, _ in
@@ -156,7 +163,7 @@ case .browse:
         connected = true
         log("found sender: \(first.endpoint)")
         nwBrowser.cancel()
-        client = ReceiverClient(endpoint: first.endpoint) {
+        client = ReceiverClient(endpoint: first.endpoint, peerToPeer: options.peerToPeer) {
             startPipeline()
         }
         client.start()

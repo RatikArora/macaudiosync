@@ -10,6 +10,7 @@ struct SenderOptions {
     var mode: Mode = .tone(frequency: 440)
     var bufferDelayMs = 150
     var name = Host.current().localizedName ?? "MacAudioSync"
+    var peerToPeer = true
 
     enum Mode {
         case tone(frequency: Double)
@@ -52,6 +53,7 @@ func parseSenderOptions() -> SenderOptions {
         options.bufferDelayMs = ms
     }
     if let n = takeValue("--name") { options.name = n }
+    if takeFlag("--no-p2p") { options.peerToPeer = false }
     let capture = takeFlag("--capture")
     if let i = args.firstIndex(of: "--tone") {
         args.remove(at: i)
@@ -83,6 +85,9 @@ options:
                        Watch "margin=" in the receiver's stats to tune:
                        healthy margin minus ~30ms is your safe buffer floor.
   --name <name>        Bonjour service name (default: computer name)
+  --no-p2p             disable the peer-to-peer (AWDL) link; use only the
+                       router. Try this if audio gets WORSE after enabling
+                       Wi-Fi p2p (AWDL channel-hopping can hurt some setups)
 """
 
 let options = parseSenderOptions()
@@ -94,7 +99,7 @@ var toneSource: ToneSource?
 var audioCapture: SystemAudioCapture?
 
 do {
-    let server = try SenderServer(port: options.port, serviceName: options.name)
+    let server = try SenderServer(port: options.port, serviceName: options.name, peerToPeer: options.peerToPeer)
     server.start()
 
     switch options.mode {

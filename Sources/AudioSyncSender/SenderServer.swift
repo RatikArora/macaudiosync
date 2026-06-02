@@ -21,11 +21,19 @@ final class SenderServer {
         var lastSeenNs: UInt64
     }
 
-    init(port: UInt16, serviceName: String) throws {
+    init(port: UInt16, serviceName: String, peerToPeer: Bool = true) throws {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw RuntimeError("invalid port \(port)")
         }
-        listener = try NWListener(using: .udp, on: nwPort)
+        let params = NWParameters.udp
+        // Voice-class QoS (802.11e WMM): Wi-Fi prioritizes our datagrams and
+        // exempts them from power-save buffering — this directly reduces the
+        // periodic 70–150 ms jitter bursts seen on infrastructure Wi-Fi.
+        params.serviceClass = .interactiveVoice
+        // Peer-to-peer (AWDL): lets receivers reach us over the direct
+        // Mac-to-Mac link (the AirDrop radio path), bypassing the router.
+        params.includePeerToPeer = peerToPeer
+        listener = try NWListener(using: params, on: nwPort)
         // Advertise over Bonjour so receivers can find us with --browse.
         listener.service = NWListener.Service(name: serviceName, type: "_audiosync._udp")
         listener.newConnectionHandler = { [weak self] connection in
