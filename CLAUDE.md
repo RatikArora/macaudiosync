@@ -31,23 +31,37 @@ Both Macs must be on the same Wi-Fi/LAN. macOS may prompt for
 
 ## Sender steps
 
-1. Permission (one-time): System Settings → Privacy & Security →
-   **Screen Recording** → enable the terminal app. Without it, `--capture`
-   fails with SCStreamErrorDomain **-3801** ("user declined TCCs") — that
-   error always means this permission, tell the user to grant it and rerun.
-2. Start (run in background, keep the shell):
+Two capture modes — pick deliberately:
+
+- **`--party` (default recommendation, macOS 14.2+):** Core Audio process
+  tap captures system audio AND MUTES the original output; the sender plays
+  the synced delayed timeline through its own speakers via a local
+  `SyncedPlayer`. Every speaker in the room (sender + receivers) plays in
+  unison → zero *perceived* latency for music. Permission: **System Audio
+  Recording** (its own TCC prompt; separate from Screen Recording). Failure
+  `AudioHardwareCreateProcessTap failed` → that permission is missing.
+- **`--capture`:** ScreenCaptureKit; original keeps playing immediately on
+  the sender (use when watching video on the sender's screen, or macOS 13).
+  Permission: **Screen Recording**; SCStreamErrorDomain **-3801** ("user
+  declined TCCs") always means it's missing.
+
+1. Start (run in background, keep the shell; `caffeinate -i` to survive
+   sleep):
    ```sh
-   .build/release/audiosync-send --capture
+   caffeinate -i .build/release/audiosync-send --party
    ```
-3. Confirm from its log, in order:
+2. Confirm from its log, in order:
    - `listening on UDP port 7805, Bonjour "<name>" (_audiosync._udp)`
-   - `system audio capture started (48000 Hz, 2ch)`
+   - party: `local synced playback started` + `process-tap capture started
+     (… original output MUTED)`; capture: `system audio capture started`
    - `clients=N packets/s=~300×N` once receivers join (`clients=0
      packets/s=0` just means nobody has connected yet — not an error).
-4. User plays audio; that's it.
+3. User plays audio; that's it. NOTE: in party mode, killing the sender
+   un-mutes the system (tap dies with the process) — audio reverts to
+   normal local playback, nothing is left broken.
 
-Useful flags: `--tone [freq]` (test signal instead of capture),
-`--port <p>`, `--buffer-ms <ms>` (latency vs jitter headroom — see tuning),
+Useful flags: `--tone [freq]` (test signal), `--no-local-play` (party
+without sender speakers), `--port <p>`, `--buffer-ms <ms>` (see tuning),
 `--name <bonjour name>`.
 
 ## Receiver steps
@@ -77,6 +91,7 @@ Test/CI flags: `--headless` (full pipeline, no speakers), `--exit-after <s>`.
 | `margin` | min arrival headroom last second | > 30 ms; `LOW` warning printed under 15 ms |
 | `fill` | % of frames actually played | 100% |
 | `late` | chunks that arrived too late | 0 (occasional 1–2 on Wi-Fi ok) |
+| `peak` | max |sample| rendered last second | >0 when audio is actually playing; 0.00 = silence on the wire (nothing playing on sender) |
 | `decodeErr` | malformed packets | 0 |
 
 ### Latency tuning (sender's `--buffer-ms`, default 150)
@@ -138,10 +153,13 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
    # expect: 100% fill, silent=0, late=0, offset ~0.01ms; then pkill -f audiosync-
    ```
 4. **Code layout:** `Sources/SyncCore` = pure logic (clock sync, jitter
-   buffer, timeline renderer, wire protocol) — fully unit-tested, no
-   network/audio imports; keep it that way. `Sources/AudioSyncSender`,
-   `Sources/AudioSyncReceiver` = thin Network.framework/AVFoundation/
-   ScreenCaptureKit shells.
+   buffer, timeline renderer, resampler, wire protocol) — fully
+   unit-tested, no network/audio imports; keep it that way.
+   `Sources/AudioPipeline` = shared `SyncedPlayer` (AVAudioEngine playback
+   of a JitterBuffer against an injected master clock; used by receivers
+   and by the sender's party mode). `Sources/AudioSyncSender`,
+   `Sources/AudioSyncReceiver` = thin Network.framework/ScreenCaptureKit/
+   CoreAudio-tap shells.
 5. **Known macOS gotchas (cost real debugging time):**
    - Objects created inside switch-case blocks in `main.swift` top-level
      code are RELEASED when the block ends — dispatch timers/NWBrowser
@@ -160,11 +178,11 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
 
 ## Roadmap (next features, in value order)
 
-1. **Process-tap capture** (`AudioHardwareCreateProcessTap` +
-   `CATapDescription.muteBehavior = .mutedWhenTapped`, macOS 14.4+): capture
-   while muting the original output, then the sender plays through a local
-   synced receiver too → zero perceived latency in the same room.
+1. ~~Process-tap capture~~ — DONE (--party mode, 2026-06-03).
 2. Device-latency calibration (`kAudioDevicePropertyLatency`) per receiver.
 3. Micro-resampler driven by `DriftEstimator` (smooth rate-matching instead
    of frame repeat/skip at chunk boundaries).
 4. Opus compression for WAN; DTLS if streaming beyond the home LAN.
+5. Party-mode niceties: handle default-output-device changes mid-stream
+   (rebuild the aggregate); video lip-sync mode (small fixed buffer +
+   wired link guidance).

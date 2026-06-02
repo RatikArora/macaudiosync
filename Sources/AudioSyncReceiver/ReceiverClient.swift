@@ -2,6 +2,11 @@ import Foundation
 import Network
 import SyncCore
 
+func log(_ message: String) {
+    let seconds = Double(MonotonicClock.nowNs()) / 1e9
+    FileHandle.standardError.write(Data(String(format: "[%.3f] %@\n", seconds, message).utf8))
+}
+
 /// UDP client: connects to the sender, keeps the clock synchronized with
 /// periodic probes, and files incoming audio packets into the jitter buffer.
 final class ReceiverClient {

@@ -21,8 +21,12 @@ let package = Package(
         // renderer. No networking or audio-hardware dependencies, so it is
         // fully unit-testable.
         .target(name: "SyncCore", swiftSettings: v5),
-        .executableTarget(name: "AudioSyncSender", dependencies: ["SyncCore"], swiftSettings: v5),
-        .executableTarget(name: "AudioSyncReceiver", dependencies: ["SyncCore"], swiftSettings: v5),
+        // Shared synced-playback engine (AVAudioEngine + TimelineRenderer):
+        // used by receivers, and by the sender in --party mode to play its
+        // own delayed timeline locally.
+        .target(name: "AudioPipeline", dependencies: ["SyncCore"], swiftSettings: v5),
+        .executableTarget(name: "AudioSyncSender", dependencies: ["SyncCore", "AudioPipeline"], swiftSettings: v5),
+        .executableTarget(name: "AudioSyncReceiver", dependencies: ["SyncCore", "AudioPipeline"], swiftSettings: v5),
         .testTarget(name: "SyncCoreTests", dependencies: ["SyncCore"], swiftSettings: v5),
     ]
 )

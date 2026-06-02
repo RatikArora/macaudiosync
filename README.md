@@ -45,13 +45,21 @@ Binaries land in `.build/release/audiosync-send` and
 **2. On the Mac that plays the music (sender):**
 
 ```sh
-.build/release/audiosync-send --capture
+.build/release/audiosync-send --party      # recommended (macOS 14.2+)
 ```
 
-   - The first run asks for **Screen Recording** permission (that's how
-     macOS gates system-audio capture). Grant it to your terminal app in
-     System Settings → Privacy & Security → Screen Recording, then run again.
-   - Make sure both Macs are on the **same Wi-Fi/LAN**.
+   **`--party` = zero perceived latency.** It taps the system audio, *mutes
+   the original output*, and plays the synced delayed timeline through this
+   Mac's own speakers too — so this Mac and every receiver play in unison
+   (within ~1 ms, the clock-sync precision). There is no "early" copy left
+   to compare against, so the buffer delay becomes inaudible for music.
+   First run prompts for **System Audio Recording** permission.
+
+   Alternative: `--capture` (ScreenCaptureKit) keeps the original audio
+   playing immediately on the sender — use for video lip-sync on the
+   sender's screen, or on macOS 13. Needs **Screen Recording** permission.
+
+   Make sure all Macs are on the **same Wi-Fi/LAN**.
 
 **3. On every other Mac (receivers):**
 
@@ -66,18 +74,22 @@ Binaries land in `.build/release/audiosync-send` and
 .build/release/audiosync-recv --connect <sender-name>.local:7805
 ```
 
-**4. Play YouTube / Spotify / anything on the sender Mac.** All Macs play it
-   together. Note the sender's *own* speakers play immediately while
-   receivers play `--buffer-ms` later — for in-the-same-room listening,
-   either mute the sender and add a receiver on the sender Mac too
-   (`audiosync-recv --connect 127.0.0.1:7805`), or just use the receivers
-   as your speakers.
+**4. Play YouTube / Spotify / anything on the sender Mac.** All Macs play
+   it together. In `--party` mode that includes the sender's own speakers,
+   perfectly in step with everyone. (In `--capture` mode the sender's
+   speakers play `--buffer-ms` ahead of the receivers — mute the sender or
+   sit in another room.)
 
 ### Options
 
 ```
 audiosync-send:
-  --capture            stream the Mac's system audio
+  --party              tap system audio, MUTE the original, play the synced
+                       timeline locally too (zero perceived latency;
+                       macOS 14.2+; alias --capture-mute)
+  --no-local-play      with --party: capture+mute without local playback
+  --capture            stream system audio via ScreenCaptureKit (original
+                       keeps playing on the sender)
   --tone [freq]        stream a 440 Hz test tone instead (default mode)
   --port <port>        UDP port (default 7805)
   --buffer-ms <ms>     playback delay budget 20–5000 (default 150):

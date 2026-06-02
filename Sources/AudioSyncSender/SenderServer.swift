@@ -21,6 +21,10 @@ final class SenderServer {
         var lastSeenNs: UInt64
     }
 
+    /// Optional local consumer of every chunk (used by --party mode to feed
+    /// the sender's own synced playback without a network round trip).
+    var localSink: ((AudioChunk) -> Void)?
+
     init(port: UInt16, serviceName: String, peerToPeer: Bool = true) throws {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw RuntimeError("invalid port \(port)")
@@ -145,6 +149,7 @@ final class SenderServer {
                 samples: slice
             )
             broadcast(Wire.encode(.audio(chunk)))
+            localSink?(chunk)
             frameOffset += n
         }
     }

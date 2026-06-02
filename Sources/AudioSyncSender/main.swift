@@ -1,5 +1,6 @@
 import Foundation
 import SyncCore
+import AudioPipeline
 
 // audiosync-send — master side. Captures audio (system audio or a test
 // tone), stamps every packet with "play this at master time T", and serves
@@ -11,10 +12,12 @@ struct SenderOptions {
     var bufferDelayMs = 150
     var name = Host.current().localizedName ?? "MacAudioSync"
     var peerToPeer = true
+    var localPlayback = true
 
     enum Mode {
         case tone(frequency: Double)
         case capture
+        case party
     }
 }
 
@@ -55,6 +58,8 @@ func parseSenderOptions() -> SenderOptions {
     if let n = takeValue("--name") { options.name = n }
     if takeFlag("--no-p2p") { options.peerToPeer = false }
     let capture = takeFlag("--capture")
+    let party = takeFlag("--party") || takeFlag("--capture-mute")
+    if takeFlag("--no-local-play") { options.localPlayback = false }
     if let i = args.firstIndex(of: "--tone") {
         args.remove(at: i)
         // Frequency value is optional: consume the next token only if it
@@ -68,6 +73,7 @@ func parseSenderOptions() -> SenderOptions {
         }
     }
     if capture { options.mode = .capture }
+    if party { options.mode = .party }
     if !args.isEmpty { fail("unknown arguments: \(args.joined(separator: " "))") }
     return options
 }
@@ -76,7 +82,15 @@ let senderUsage = """
 usage: audiosync-send [options]
 
 options:
-  --capture            stream the Mac's system audio (needs Screen Recording
+  --party              ZERO perceived latency mode (macOS 14.2+): tap system
+                       audio, MUTE the original output, and play the synced
+                       delayed timeline through this Mac's speakers too — so
+                       every speaker in the room (this Mac + all receivers)
+                       plays in unison. Needs "System Audio Recording"
+                       permission (macOS prompts on first run).
+  --no-local-play      with --party: capture+mute but don't play locally
+  --capture            stream the Mac's system audio via ScreenCaptureKit
+                       (original keeps playing; needs Screen Recording
                        permission; macOS prompts on first run)
   --tone [freq]        stream a test tone instead (default mode, 440 Hz)
   --port <port>        UDP port to listen on (default 7805)
@@ -97,6 +111,9 @@ let options = parseSenderOptions()
 // which cancels its timers/streams.)
 var toneSource: ToneSource?
 var audioCapture: SystemAudioCapture?
+var tapCapture: AnyObject? // ProcessTapCapture (macOS 14.2+ only type)
+var localPlayer: SyncedPlayer?
+var localBuffer: JitterBuffer?
 
 do {
     let server = try SenderServer(port: options.port, serviceName: options.name, peerToPeer: options.peerToPeer)
@@ -129,6 +146,47 @@ do {
                 log("hint: grant Screen Recording permission in System Settings > Privacy & Security")
                 exit(1)
             }
+        }
+
+    case .party:
+        guard #available(macOS 14.2, *) else {
+            log("--party needs macOS 14.2+ (Core Audio process taps); use --capture instead")
+            exit(1)
+        }
+        let bufferDelayNs = UInt64(options.bufferDelayMs) * 1_000_000
+
+        // Local synced playback: the sender's own speakers join the fleet,
+        // playing the exact same delayed master timeline as every receiver.
+        // The master clock is our own clock, so the conversion is identity.
+        if options.localPlayback {
+            let buffer = JitterBuffer()
+            let player = SyncedPlayer(buffer: buffer) { hostNs in hostNs }
+            do {
+                try player.start()
+            } catch {
+                log("failed to start local playback: \(error)")
+                exit(1)
+            }
+            localBuffer = buffer
+            localPlayer = player
+            server.localSink = { chunk in buffer.insert(chunk) }
+            log("local synced playback started — this Mac's speakers are part of the fleet")
+        }
+
+        let tap = ProcessTapCapture { samples, captureHostNs, sampleRate, channels in
+            server.sendAudio(
+                samples: samples,
+                firstFramePlayAtNs: captureHostNs + bufferDelayNs,
+                sampleRate: sampleRate,
+                channels: channels
+            )
+        }
+        tapCapture = tap
+        do {
+            try tap.start()
+        } catch {
+            log("failed to start party mode: \(error)")
+            exit(1)
         }
     }
 

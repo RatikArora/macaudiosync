@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import SyncCore
+import AudioPipeline
 
 // audiosync-recv — receiver side. Connects to a sender, synchronizes to its
 // master clock, and plays the stream through the default output device at
@@ -78,7 +79,7 @@ let options = parseReceiverOptions()
 // Top-level globals: these must outlive the setup code below. (A `let`
 // inside a switch-case block is released when the block ends, which would
 // cancel the browser/engine.)
-var playback: PlaybackEngine?
+var playback: SyncedPlayer?
 var headless: HeadlessRenderer?
 var statsTimer: DispatchSourceTimer?
 var browser: NWBrowser?
@@ -90,14 +91,18 @@ func startPipeline() {
         renderer.start()
         headless = renderer
     } else {
-        let engine = PlaybackEngine(client: client)
+        let receiverClient = client! // capture strongly for the render thread
+        let player = SyncedPlayer(buffer: receiverClient.buffer) { hostNs in
+            receiverClient.sync.masterNs(forClientNs: hostNs)
+        }
         do {
-            try engine.start()
+            try player.start()
         } catch {
             log("failed to start playback: \(error)")
             exit(1)
         }
-        playback = engine
+        playback = player
+        log("playback engine started (\(Int(SyncedPlayer.defaultSampleRate)) Hz, \(SyncedPlayer.defaultChannels)ch)")
     }
     startStatsTimer()
 }
@@ -107,7 +112,7 @@ func startStatsTimer() {
     timer.schedule(deadline: .now() + 1, repeating: 1)
     timer.setEventHandler {
         let accumulator = options.headless ? headless!.stats : playback!.stats
-        let (filled, silent, unsynced) = accumulator.drain()
+        let (filled, silent, unsynced, peak) = accumulator.drain()
         let offsetMs = client.sync.offsetNs.map { String(format: "%.3f", Double($0) / 1e6) } ?? "—"
         let rttUs = client.sync.bestRttNs.map { String($0 / 1_000) } ?? "—"
         let driftPpm = client.drift.driftPpm.map { String(format: "%.1f", $0) } ?? "—"
@@ -127,7 +132,7 @@ func startStatsTimer() {
         }
         log("sync offset=\(offsetMs)ms rtt=\(rttUs)µs drift=\(driftPpm)ppm | " +
             "buffered=\(bufferedMs)ms margin=\(marginText) filled=\(filled) silent=\(silent) unsynced=\(unsynced) " +
-            "(\(filled * 100 / total)% fill) | pkts=\(client.audioPacketsReceived) " +
+            "(\(filled * 100 / total)% fill) peak=\(String(format: "%.2f", peak)) | pkts=\(client.audioPacketsReceived) " +
             "dup=\(client.buffer.duplicateCount) late=\(client.buffer.lateCount) " +
             "decodeErr=\(client.decodeErrors)")
     }

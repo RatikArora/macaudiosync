@@ -1,5 +1,6 @@
 import Foundation
 import SyncCore
+import AudioPipeline
 
 /// Renders the master timeline on a timer instead of through the audio
 /// hardware. Used by `--headless` for automated end-to-end testing: it
@@ -10,12 +11,12 @@ final class HeadlessRenderer {
     private let queue = DispatchQueue(label: "audiosync.recv.headless")
     private var timer: DispatchSourceTimer?
     private var windowStartMasterNs: UInt64?
-    private var scratch = [Float](repeating: 0, count: 4800 * PlaybackEngine.channels)
+    private var scratch = [Float](repeating: 0, count: 4800 * SyncedPlayer.defaultChannels)
     let stats = RenderStatsAccumulator()
     private(set) var reseekCount = 0
 
-    private let sampleRate = PlaybackEngine.sampleRate
-    private let channels = PlaybackEngine.channels
+    private let sampleRate = SyncedPlayer.defaultSampleRate
+    private let channels = SyncedPlayer.defaultChannels
     private let framesPerTick = 480 // 10 ms
     private let tickNs: UInt64 = 10_000_000
 
@@ -57,6 +58,12 @@ final class HeadlessRenderer {
         )
         client.buffer.dropChunks(endingBefore: start)
         stats.add(renderStats)
+        var peak: Float = 0
+        for i in 0..<(framesPerTick * channels) {
+            let magnitude = abs(scratch[i])
+            if magnitude > peak { peak = magnitude }
+        }
+        stats.recordPeak(peak)
         windowStartMasterNs = start + tickNs
     }
 }
