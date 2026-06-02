@@ -12,6 +12,7 @@ struct ReceiverOptions {
     var headless = false
     var exitAfterSeconds: Int? = nil
     var peerToPeer = true
+    var passphrase: String? = nil
 
     enum Target {
         case browse
@@ -53,6 +54,7 @@ func parseReceiverOptions() -> ReceiverOptions {
     if takeFlag("--browse") { options.target = .browse }
     options.headless = takeFlag("--headless")
     if takeFlag("--no-p2p") { options.peerToPeer = false }
+    if let k = takeValue("--key") { options.passphrase = k }
     if let e = takeValue("--exit-after") {
         guard let s = Int(e), s > 0 else { fail("invalid --exit-after \(e)") }
         options.exitAfterSeconds = s
@@ -72,6 +74,8 @@ options:
   --exit-after <secs>    exit automatically after N seconds (for testing)
   --no-p2p               disable the peer-to-peer (AWDL) link; use only the
                          router (try if audio gets worse with p2p enabled)
+  --key <passphrase>     decrypt an encrypted stream (must match the
+                         sender's --key)
 """
 
 let options = parseReceiverOptions()
@@ -150,7 +154,7 @@ func scheduleExitIfRequested() {
 
 switch options.target {
 case .hostPort(let host, let port):
-    client = ReceiverClient(host: host, port: port, peerToPeer: options.peerToPeer) {
+    client = ReceiverClient(host: host, port: port, peerToPeer: options.peerToPeer, passphrase: options.passphrase) {
         startPipeline()
     }
     client.start()
@@ -168,7 +172,7 @@ case .browse:
         connected = true
         log("found sender: \(first.endpoint)")
         nwBrowser.cancel()
-        client = ReceiverClient(endpoint: first.endpoint, peerToPeer: options.peerToPeer) {
+        client = ReceiverClient(endpoint: first.endpoint, peerToPeer: options.peerToPeer, passphrase: options.passphrase) {
             startPipeline()
         }
         client.start()

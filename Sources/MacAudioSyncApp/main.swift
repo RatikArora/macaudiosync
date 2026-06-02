@@ -216,6 +216,7 @@ struct SenderView: View {
     @ObservedObject var engine: EngineProcess
     @AppStorage("bufferMs") private var bufferMs = 250.0
     @AppStorage("playLocally") private var playLocally = true
+    @AppStorage("streamKey") private var streamKey = ""
 
     /// Party mode (mute original + play synced locally) needs the Core Audio
     /// process-tap API from macOS 14.2. Older Macs fall back to capture mode.
@@ -251,6 +252,18 @@ struct SenderView: View {
                 }
                 Text("Higher = more resistant to Wi-Fi hiccups. 250 ms is a good default.")
                     .font(.caption).foregroundStyle(.tertiary)
+                Divider()
+                HStack {
+                    Image(systemName: streamKey.isEmpty ? "lock.open" : "lock.fill")
+                        .foregroundStyle(streamKey.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.green))
+                    SecureField("Password (optional — encrypts the stream)", text: $streamKey)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(engine.isRunning)
+                }
+                Text(streamKey.isEmpty
+                     ? "No password: anyone on this Wi-Fi could listen. Fine at home; set one on shared networks."
+                     : "Encrypted (ChaCha20-Poly1305). Receivers must enter the same password.")
+                    .font(.caption).foregroundStyle(.tertiary)
             }
 
             BigButton(
@@ -267,6 +280,7 @@ struct SenderView: View {
                     } else {
                         args.append("--capture")
                     }
+                    if !streamKey.isEmpty { args += ["--key", streamKey] }
                     engine.autoRestart = false
                     engine.start(engine: "audiosync-send", arguments: args)
                 }
@@ -293,8 +307,13 @@ struct SenderView: View {
 struct ReceiverView: View {
     @Binding var role: Role
     @ObservedObject var engine: EngineProcess
+    @AppStorage("streamKey") private var streamKey = ""
 
     private var isLoud: Bool { engine.peak > 0.95 }
+
+    private var receiverArgs: [String] {
+        streamKey.isEmpty ? [] : ["--key", streamKey]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -307,32 +326,49 @@ struct ReceiverView: View {
             )
 
             if engine.isRunning, engine.connectedTo != nil {
-                // Live level visualizer — the proof there's music in the air.
-                SettingsCard {
-                    EQView(level: engine.peak, loud: isLoud)
+                // The hero: flowing waveform + the physics line beneath it.
+                VStack(spacing: 8) {
+                    WaveformView(level: engine.peak, loud: isLoud)
                         .frame(maxWidth: .infinity)
-                }
-
-                // The number that justifies this whole app.
-                if let jitter = engine.syncJitterUs {
-                    SyncHeroRow(jitterUs: jitter, rttUs: engine.rttUs)
-                }
-
-                SettingsCard {
-                    HStack(spacing: 24) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Stream health").font(.caption).foregroundStyle(.secondary)
-                            ProgressView(value: Double(engine.fillPercent ?? 0), total: 100)
-                            Text("\(engine.fillPercent ?? 0)%").font(.caption).monospacedDigit()
-                        }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Safety buffer").font(.caption).foregroundStyle(.secondary)
-                            ProgressView(value: min(Double(max(engine.marginMs ?? 0, 0)), 150), total: 150)
-                                .tint((engine.marginMs ?? 0) < 20 ? .orange : nil)
-                            Text("\(max(engine.marginMs ?? 0, 0)) ms headroom")
-                                .font(.caption).monospacedDigit()
-                        }
+                    if let jitter = engine.syncJitterUs {
+                        Text("Locked to the sender within **±\(jitter) µs** — sound itself travels just \(soundDistance(jitter)) in that time")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
+                }
+                .padding(.vertical, 14)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(LinearGradient(
+                            colors: [Color(red: 0.32, green: 0.18, blue: 0.92).opacity(0.14),
+                                     Color(red: 0.10, green: 0.52, blue: 1.00).opacity(0.07)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                )
+
+                HStack(spacing: 10) {
+                    StatTile(icon: "metronome.fill", title: "Sync",
+                             value: engine.syncJitterUs.map { "±\($0) µs" } ?? "—")
+                    StatTile(icon: "wifi", title: "Ping",
+                             value: engine.rttUs.map { String(format: "%.1f ms", Double($0) / 1000) } ?? "—")
+                    StatTile(icon: "shield.lefthalf.filled", title: "Buffer",
+                             value: engine.marginMs.map { "\(max($0, 0)) ms" } ?? "—",
+                             warn: (engine.marginMs ?? 100) < 20)
+                    StatTile(icon: "waveform", title: "Health",
+                             value: "\(engine.fillPercent ?? 0)%",
+                             warn: (engine.fillPercent ?? 100) < 95)
+                }
+            }
+
+            if !engine.isRunning || engine.connectedTo == nil {
+                HStack {
+                    Image(systemName: streamKey.isEmpty ? "lock.open" : "lock.fill")
+                        .foregroundStyle(streamKey.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.green))
+                    SecureField("Password (only if the sender set one)", text: $streamKey)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(engine.isRunning)
                 }
             }
 
@@ -344,7 +380,7 @@ struct ReceiverView: View {
                     engine.stop()
                 } else {
                     engine.autoRestart = true
-                    engine.start(engine: "audiosync-recv", arguments: [])
+                    engine.start(engine: "audiosync-recv", arguments: receiverArgs)
                 }
             }
 
@@ -362,7 +398,7 @@ struct ReceiverView: View {
         .onAppear {
             if !engine.isRunning {
                 engine.autoRestart = true
-                engine.start(engine: "audiosync-recv", arguments: [])
+                engine.start(engine: "audiosync-recv", arguments: receiverArgs)
             }
         }
     }
@@ -370,74 +406,100 @@ struct ReceiverView: View {
 
 // MARK: - Music-first widgets
 
-/// Animated equalizer bars driven by the live output level.
-struct EQView: View {
+/// Smooth layered waveform driven by the live output level — calm shimmer
+/// when quiet, full flowing wave when the music plays.
+struct WaveformView: View {
     let level: Double // 0...1+
     let loud: Bool
+
+    private struct Layer {
+        let frequency: Double  // wave cycles across the width
+        let speed: Double      // phase velocity
+        let weight: Double     // relative amplitude
+        let opacity: Double
+        let lineWidth: Double
+    }
+
+    private let layers: [Layer] = [
+        Layer(frequency: 1.6, speed: 1.9, weight: 1.00, opacity: 0.95, lineWidth: 2.2),
+        Layer(frequency: 2.6, speed: -1.3, weight: 0.62, opacity: 0.45, lineWidth: 1.6),
+        Layer(frequency: 3.9, speed: 2.7, weight: 0.38, opacity: 0.25, lineWidth: 1.2),
+    ]
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
-            let amp = min(level * 1.3, 1.0)
-            HStack(alignment: .center, spacing: 4) {
-                ForEach(0..<21, id: \.self) { i in
-                    let phase = Double(i) * 0.83
-                    let speed = 5.0 + Double((i * 7) % 9)
-                    let wiggle = (sin(t * speed + phase) + 1) / 2
-                    let height = amp <= 0.004 ? 3.0 : 4.0 + wiggle * 40.0 * amp
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(LinearGradient(
-                            colors: loud
-                                ? [.orange, .pink]
-                                : [Color(red: 0.32, green: 0.18, blue: 0.92),
-                                   Color(red: 0.10, green: 0.52, blue: 1.00)],
-                            startPoint: .bottom, endPoint: .top))
-                        .frame(width: 6, height: height)
+            Canvas { ctx, size in
+                let midY = size.height / 2
+                // Idle shimmer of ~3%, full amplitude with the music.
+                let amp = (0.03 + min(level * 1.15, 1.0) * 0.97) * (size.height * 0.42)
+                let colors: [Color] = loud
+                    ? [.orange, .pink]
+                    : [Color(red: 0.45, green: 0.30, blue: 1.00),
+                       Color(red: 0.10, green: 0.60, blue: 1.00)]
+                let gradient = GraphicsContext.Shading.linearGradient(
+                    Gradient(colors: colors),
+                    startPoint: .zero,
+                    endPoint: CGPoint(x: size.width, y: 0)
+                )
+
+                for layer in layers {
+                    var path = Path()
+                    let steps = 90
+                    for i in 0...steps {
+                        let x = size.width * Double(i) / Double(steps)
+                        let progress = Double(i) / Double(steps)
+                        // Taper the wave toward the edges for elegance.
+                        let envelope = sin(progress * .pi)
+                        let angle = progress * layer.frequency * 2 * .pi + t * layer.speed
+                        let y = midY + sin(angle) * amp * layer.weight * envelope
+                        if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                        else { path.addLine(to: CGPoint(x: x, y: y)) }
+                    }
+                    ctx.opacity = layer.opacity
+                    ctx.stroke(
+                        path, with: gradient,
+                        style: StrokeStyle(lineWidth: layer.lineWidth, lineCap: .round, lineJoin: .round)
+                    )
                 }
             }
-            .frame(height: 48)
-            .animation(nil, value: t)
+            .frame(height: 64)
         }
     }
 }
 
-/// The headline: how tightly this Mac is locked to the sender's clock,
-/// translated into something physical.
-struct SyncHeroRow: View {
-    let jitterUs: Int
-    let rttUs: Int?
+/// Sound covers ~0.343 mm per microsecond — turn sync µs into distance.
+func soundDistance(_ microseconds: Int) -> String {
+    let mm = Double(microseconds) * 0.343
+    if mm < 10 { return String(format: "%.1f mm of air", mm) }
+    if mm < 1000 { return String(format: "%.0f cm of air", mm / 10) }
+    return String(format: "%.1f m of air", mm / 1000)
+}
 
-    /// Sound covers ~0.343 mm per microsecond.
-    private var soundDistance: String {
-        let mm = Double(jitterUs) * 0.343
-        if mm < 10 { return String(format: "%.1f mm", mm) }
-        if mm < 1000 { return String(format: "%.0f cm", mm / 10) }
-        return String(format: "%.1f m", mm / 1000)
-    }
+/// Compact metric tile for the receiver dashboard.
+struct StatTile: View {
+    let icon: String
+    let title: String
+    let value: String
+    var warn = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "metronome.fill")
-                .font(.title3)
-                .foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Locked to the sender's clock within ±\(jitterUs) µs")
-                    .font(.subheadline.bold())
-                Text("Sound itself only travels \(soundDistance) in that time" +
-                     (rttUs.map { " · Wi-Fi ping \(String(format: "%.1f", Double($0) / 1000)) ms" } ?? ""))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .imageScale(.small)
+                .foregroundStyle(warn ? AnyShapeStyle(.orange) : AnyShapeStyle(.tint))
+            Text(value)
+                .font(.system(.subheadline, design: .rounded).bold())
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(LinearGradient(
-                    colors: [Color(red: 0.32, green: 0.18, blue: 0.92).opacity(0.18),
-                             Color(red: 0.10, green: 0.52, blue: 1.00).opacity(0.10)],
-                    startPoint: .leading, endPoint: .trailing))
-        )
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 

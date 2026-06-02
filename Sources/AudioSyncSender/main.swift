@@ -13,6 +13,7 @@ struct SenderOptions {
     var name = Host.current().localizedName ?? "MacAudioSync"
     var peerToPeer = true
     var localPlayback = true
+    var passphrase: String? = nil
 
     enum Mode {
         case tone(frequency: Double)
@@ -57,6 +58,7 @@ func parseSenderOptions() -> SenderOptions {
     }
     if let n = takeValue("--name") { options.name = n }
     if takeFlag("--no-p2p") { options.peerToPeer = false }
+    if let k = takeValue("--key") { options.passphrase = k }
     let capture = takeFlag("--capture")
     let party = takeFlag("--party") || takeFlag("--capture-mute")
     if takeFlag("--no-local-play") { options.localPlayback = false }
@@ -102,6 +104,10 @@ options:
   --no-p2p             disable the peer-to-peer (AWDL) link; use only the
                        router. Try this if audio gets WORSE after enabling
                        Wi-Fi p2p (AWDL channel-hopping can hurt some setups)
+  --key <passphrase>   encrypt + authenticate the stream (ChaCha20-Poly1305).
+                       Receivers must use the same --key. Recommended on any
+                       shared Wi-Fi; without it, anyone on the network can
+                       listen to this Mac's audio.
 """
 
 let options = parseSenderOptions()
@@ -116,7 +122,13 @@ var localPlayer: SyncedPlayer?
 var localBuffer: JitterBuffer?
 
 do {
-    let server = try SenderServer(port: options.port, serviceName: options.name, peerToPeer: options.peerToPeer)
+    let server = try SenderServer(
+        port: options.port,
+        serviceName: options.name,
+        peerToPeer: options.peerToPeer,
+        passphrase: options.passphrase
+    )
+    if options.passphrase != nil { log("stream encryption: ON (receivers need the same --key)") }
     server.start()
 
     switch options.mode {

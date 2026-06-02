@@ -43,15 +43,22 @@ final class ReceiverClient {
         return params
     }
 
-    init(endpoint: NWEndpoint, peerToPeer: Bool = true, onReady: @escaping () -> Void) {
+    /// Non-nil when a passphrase is set: all traffic both ways is
+    /// sealed/verified, and plaintext or wrong-key streams are rejected.
+    private let cipher: StreamCipher?
+    private var warnedAboutKeyMismatch = false
+
+    init(endpoint: NWEndpoint, peerToPeer: Bool = true, passphrase: String? = nil, onReady: @escaping () -> Void) {
         self.connection = NWConnection(to: endpoint, using: Self.parameters(peerToPeer: peerToPeer))
+        self.cipher = passphrase.flatMap { $0.isEmpty ? nil : StreamCipher(passphrase: $0) }
         self.onReady = onReady
     }
 
-    convenience init(host: String, port: UInt16, peerToPeer: Bool = true, onReady: @escaping () -> Void) {
+    convenience init(host: String, port: UInt16, peerToPeer: Bool = true, passphrase: String? = nil, onReady: @escaping () -> Void) {
         self.init(
             endpoint: .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!),
             peerToPeer: peerToPeer,
+            passphrase: passphrase,
             onReady: onReady
         )
     }
@@ -61,8 +68,8 @@ final class ReceiverClient {
             guard let self else { return }
             switch state {
             case .ready:
-                log("connected to \(self.connection.endpoint)")
-                self.connection.send(content: Wire.encode(.hello), completion: .contentProcessed { _ in })
+                log("connected to \(self.connection.endpoint)\(self.cipher != nil ? " (encrypted)" : "")")
+                self.connection.send(content: self.wrap(Wire.encode(.hello)), completion: .contentProcessed { _ in })
                 self.receiveLoop()
                 self.startClockProbes()
                 self.onReady()
@@ -98,7 +105,7 @@ final class ReceiverClient {
             }
             let t1 = MonotonicClock.nowNs()
             self.connection.send(
-                content: Wire.encode(.clockRequest(clientSendNs: t1)),
+                content: self.wrap(Wire.encode(.clockRequest(clientSendNs: t1))),
                 completion: .contentProcessed { _ in }
             )
         }
@@ -124,10 +131,32 @@ final class ReceiverClient {
         }
     }
 
+    /// Seal outbound data when encryption is on.
+    private func wrap(_ data: Data) -> Data {
+        cipher?.seal(data) ?? data
+    }
+
     private func handle(_ data: Data, receivedNs: UInt64) {
+        let payload: Data
+        if let cipher {
+            guard let opened = try? cipher.open(data) else {
+                decodeErrors &+= 1
+                warnKeyMismatch("stream rejected — is the sender using the SAME password?")
+                return
+            }
+            payload = opened
+        } else {
+            guard !StreamCipher.looksSealed(data) else {
+                decodeErrors &+= 1
+                warnKeyMismatch("stream is encrypted — set the sender's password on this receiver")
+                return
+            }
+            payload = data
+        }
+
         let message: Message
         do {
-            message = try Wire.decode(data)
+            message = try Wire.decode(payload)
         } catch {
             decodeErrors &+= 1
             return
@@ -155,5 +184,11 @@ final class ReceiverClient {
         case .hello, .clockRequest:
             break // server-to-client only carries replies and audio
         }
+    }
+
+    private func warnKeyMismatch(_ message: String) {
+        guard !warnedAboutKeyMismatch else { return }
+        warnedAboutKeyMismatch = true
+        log("ENCRYPTION MISMATCH: \(message)")
     }
 }

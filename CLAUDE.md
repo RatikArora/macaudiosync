@@ -73,7 +73,12 @@ Two capture modes — pick deliberately:
 
 Useful flags: `--tone [freq]` (test signal), `--no-local-play` (party
 without sender speakers), `--port <p>`, `--buffer-ms <ms>` (see tuning),
-`--name <bonjour name>`.
+`--name <bonjour name>`, `--key <passphrase>` (encrypt/authenticate the
+stream — ChaCha20-Poly1305; receivers need the same `--key`; without it
+the wire is plaintext and anyone on the LAN can listen — recommend a key
+on shared Wi-Fi. Receivers that can't authenticate get ZERO packets;
+mismatches show as receiver `decodeErr` + an `ENCRYPTION MISMATCH` log
+line).
 
 ## Receiver steps
 

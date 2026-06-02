@@ -25,7 +25,12 @@ final class SenderServer {
     /// the sender's own synced playback without a network round trip).
     var localSink: ((AudioChunk) -> Void)?
 
-    init(port: UInt16, serviceName: String, peerToPeer: Bool = true) throws {
+    /// Non-nil when a passphrase is set: every datagram in both directions
+    /// is sealed/verified; unauthenticated peers are ignored entirely.
+    private let cipher: StreamCipher?
+
+    init(port: UInt16, serviceName: String, peerToPeer: Bool = true, passphrase: String? = nil) throws {
+        cipher = passphrase.flatMap { $0.isEmpty ? nil : StreamCipher(passphrase: $0) }
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw RuntimeError("invalid port \(port)")
         }
@@ -69,10 +74,10 @@ final class SenderServer {
             guard let self, let connection else { return }
             switch state {
             case .ready:
-                log("receiver connected: \(key)")
-                self.clientsLock.lock()
-                self.clients[key] = ClientState(connection: connection, lastSeenNs: MonotonicClock.nowNs())
-                self.clientsLock.unlock()
+                // Don't register the client yet — registration (and thus the
+                // audio fan-out) happens in handle() only after the first
+                // message that passes authentication. Unauthenticated peers
+                // never receive a single packet.
                 self.receiveLoop(connection, key: key)
             case .failed, .cancelled:
                 self.removeClient(key)
@@ -107,11 +112,28 @@ final class SenderServer {
     }
 
     private func handle(_ data: Data, receivedNs: UInt64, from connection: NWConnection, key: String) {
-        clientsLock.lock()
-        clients[key]?.lastSeenNs = receivedNs
-        clientsLock.unlock()
+        // Authenticate/decrypt before trusting anything — including the
+        // keepalive bookkeeping, so unauthenticated peers can't stay "alive".
+        let payload: Data
+        if let cipher {
+            guard let opened = try? cipher.open(data) else { return }
+            payload = opened
+        } else {
+            guard !StreamCipher.looksSealed(data) else { return }
+            payload = data
+        }
 
-        guard let message = try? Wire.decode(data) else { return }
+        clientsLock.lock()
+        let isNew = clients[key] == nil
+        if isNew {
+            clients[key] = ClientState(connection: connection, lastSeenNs: receivedNs)
+        } else {
+            clients[key]?.lastSeenNs = receivedNs
+        }
+        clientsLock.unlock()
+        if isNew { log("receiver connected: \(key)\(cipher != nil ? " (authenticated)" : "")") }
+
+        guard let message = try? Wire.decode(payload) else { return }
         switch message {
         case .hello:
             break // lastSeen update above is all we need
@@ -122,7 +144,7 @@ final class SenderServer {
                 serverRecvNs: receivedNs,
                 serverSendNs: MonotonicClock.nowNs()
             ))
-            connection.send(content: reply, completion: .contentProcessed { _ in })
+            connection.send(content: wrap(reply), completion: .contentProcessed { _ in })
         case .clockReply, .audio:
             break // not valid from a client; ignore
         }
@@ -148,10 +170,15 @@ final class SenderServer {
                 channels: channels,
                 samples: slice
             )
-            broadcast(Wire.encode(.audio(chunk)))
+            broadcast(wrap(Wire.encode(.audio(chunk))))
             localSink?(chunk)
             frameOffset += n
         }
+    }
+
+    /// Seal outbound data when encryption is on.
+    private func wrap(_ data: Data) -> Data {
+        cipher?.seal(data) ?? data
     }
 
     private func broadcast(_ data: Data) {

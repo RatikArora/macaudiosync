@@ -251,6 +251,10 @@ Healthy output looks like `filled=48000 silent=0 ... (100% fill)` with
   rate-matching, Snapcast-style) would use.
 - **Uncompressed PCM only** (≈1.5 Mbps/receiver) — trivial for any LAN;
   Opus would cut it 10× if you ever want WAN streaming.
-- **No encryption/auth** — anyone on your LAN can listen. Fine at home;
-  add DTLS if you care.
+- ~~No encryption/auth~~ — **optional encryption shipped**: set a password
+  (app: the password field; CLI: `--key <passphrase>` on both sides) and
+  every packet is sealed with ChaCha20-Poly1305 (HKDF-derived key). Without
+  the password a receiver gets zero packets, and a Wi-Fi sniffer sees only
+  ciphertext. Measured cost: ~2 µs/packet — no effect on latency or sync.
+  Default remains open (no password) for zero-friction home use.
 - macOS 13+ only (ScreenCaptureKit audio capture).
