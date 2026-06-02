@@ -25,6 +25,12 @@ Sender Mac (master)                     Each receiver Mac
 
 ## The app (easiest way)
 
+**Download:** [`release/MacAudioSync.app.zip`](release/MacAudioSync.app.zip)
+— unzip, right-click → Open the first time (it's ad-hoc signed). Universal:
+runs on Apple Silicon and Intel, macOS 13+.
+
+Or build it yourself:
+
 ```sh
 ./make-app.sh        # builds dist/MacAudioSync.app — universal (Apple Silicon + Intel)
 ```
