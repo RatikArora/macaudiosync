@@ -21,6 +21,7 @@ APP=dist/MacAudioSync.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp App/Info.plist "$APP/Contents/Info.plist"
+cp App/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 for bin in MacAudioSyncApp audiosync-send audiosync-recv; do
     lipo -create "$ARM/$bin" "$X86/$bin" -output "$APP/Contents/MacOS/$bin"
