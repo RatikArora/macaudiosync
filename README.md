@@ -26,8 +26,14 @@ Sender Mac (master)                     Each receiver Mac
 ## The app (easiest way)
 
 **Download:** [`release/MacAudioSync.app.zip`](release/MacAudioSync.app.zip)
-— unzip, right-click → Open the first time (it's ad-hoc signed). Universal:
-runs on Apple Silicon and Intel, macOS 13+.
+— universal (Apple Silicon + Intel), macOS 13+.
+
+**First open on each Mac** (the app is ad-hoc signed, not notarized, so
+macOS blocks downloaded copies once): double-click it, dismiss the "can't
+be opened" dialog with **Done**, then System Settings → Privacy & Security
+→ scroll down → **Open Anyway**. Or in Terminal:
+`xattr -cr /path/to/MacAudioSync.app`. After that it opens normally
+forever. (Apps built locally with `./make-app.sh` are never blocked.)
 
 Or build it yourself:
 
