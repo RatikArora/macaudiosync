@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MacAudioSync}",
+            "name": "Debug audiosync-send",
+            "target": "audiosync-send",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug audiosync-send"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MacAudioSync}",
+            "name": "Release audiosync-send",
+            "target": "audiosync-send",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release audiosync-send"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MacAudioSync}",
+            "name": "Debug audiosync-recv",
+            "target": "audiosync-recv",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug audiosync-recv"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MacAudioSync}",
+            "name": "Release audiosync-recv",
+            "target": "audiosync-recv",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release audiosync-recv"
+        }
+    ]
+}
