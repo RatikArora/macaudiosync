@@ -7,7 +7,11 @@ import AudioPipeline
 // the master clock to receivers.
 
 struct SenderOptions {
-    var port: UInt16 = 7805
+    // 0 = let the OS pick an ephemeral port (49152–65535). Corporate Wi-Fi
+    // controllers sometimes blocklist specific known ports (we hit 7805
+    // filtered on one office network); the dynamic range is not. Bonjour
+    // publishes the actual port, so --browse receivers don't notice.
+    var port: UInt16 = 0
     var mode: Mode = .tone(frequency: 440)
     var bufferDelayMs = 150
     var name = Host.current().localizedName ?? "MacAudioSync"
@@ -49,7 +53,7 @@ func parseSenderOptions() -> SenderOptions {
         exit(0)
     }
     if let p = takeValue("--port") {
-        guard let port = UInt16(p), port > 0 else { fail("invalid --port \(p)") }
+        guard let port = UInt16(p) else { fail("invalid --port \(p)") }
         options.port = port
     }
     if let b = takeValue("--buffer-ms") {
@@ -95,7 +99,11 @@ options:
                        (original keeps playing; needs Screen Recording
                        permission; macOS prompts on first run)
   --tone [freq]        stream a test tone instead (default mode, 440 Hz)
-  --port <port>        UDP port to listen on (default 7805)
+  --port <port>        UDP port to listen on (default 0 = OS-assigned
+                       ephemeral port; survives office Wi-Fi that filters
+                       specific ports like 7805). Receivers using --browse
+                       auto-discover the port via Bonjour; --connect users
+                       read it from the sender's startup log.
   --buffer-ms <ms>     playback delay budget, 40–5000 (default 150);
                        larger = more network-jitter headroom, more latency.
                        Watch "margin=" in the receiver's stats to tune:

@@ -31,8 +31,18 @@ final class SenderServer {
 
     init(port: UInt16, serviceName: String, peerToPeer: Bool = true, passphrase: String? = nil) throws {
         cipher = passphrase.flatMap { $0.isEmpty ? nil : StreamCipher(passphrase: $0) }
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            throw RuntimeError("invalid port \(port)")
+        // port == 0 → ask the OS for an ephemeral port (IANA dynamic range
+        // 49152–65535). Corporate Wi-Fi controllers occasionally blocklist
+        // specific known ports (we hit 7805 being filtered on one office
+        // network); the dynamic range is essentially never on those lists.
+        let nwPort: NWEndpoint.Port
+        if port == 0 {
+            nwPort = .any
+        } else {
+            guard let p = NWEndpoint.Port(rawValue: port) else {
+                throw RuntimeError("invalid port \(port)")
+            }
+            nwPort = p
         }
         let params = NWParameters.udp
         // Voice-class QoS (802.11e WMM): Wi-Fi prioritizes our datagrams and
@@ -44,14 +54,17 @@ final class SenderServer {
         params.includePeerToPeer = peerToPeer
         listener = try NWListener(using: params, on: nwPort)
         // Advertise over Bonjour so receivers can find us with --browse.
+        // The service publishes whatever port the OS assigned, so receivers
+        // don't need to know the port in advance.
         listener.service = NWListener.Service(name: serviceName, type: "_audiosync._udp")
         listener.newConnectionHandler = { [weak self] connection in
             self?.accept(connection)
         }
-        listener.stateUpdateHandler = { state in
+        listener.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
-                log("listening on UDP port \(port), Bonjour \"\(serviceName)\" (_audiosync._udp)")
+                let actual = self?.listener.port?.rawValue ?? port
+                log("listening on UDP port \(actual), Bonjour \"\(serviceName)\" (_audiosync._udp)")
             case .failed(let error):
                 log("listener failed: \(error)")
                 exit(1)

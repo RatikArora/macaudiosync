@@ -20,6 +20,7 @@ final class ReceiverClient {
     private let queue = DispatchQueue(label: "audiosync.recv.net")
     private var clockTimer: DispatchSourceTimer?
     private var helloTimer: DispatchSourceTimer?
+    private var trafficWatchdog: DispatchSourceTimer?
     private let onReady: () -> Void
 
     // Diagnostics
@@ -72,6 +73,7 @@ final class ReceiverClient {
                 self.connection.send(content: self.wrap(Wire.encode(.hello)), completion: .contentProcessed { _ in })
                 self.receiveLoop()
                 self.startClockProbes()
+                self.startTrafficWatchdog()
                 self.onReady()
             case .failed(let error):
                 log("connection failed: \(error)")
@@ -111,6 +113,49 @@ final class ReceiverClient {
         }
         timer.resume()
         clockTimer = timer
+    }
+
+    // MARK: - Traffic watchdog
+
+    // The NWConnection enters .ready as soon as the OS sets up its local UDP
+    // socket — that says nothing about whether packets actually flow. On
+    // networks that filter our port (some corporate Wi-Fi controllers do
+    // this per-port), the hello and clock probes leave but nothing comes
+    // back, and the receiver hangs silently forever. Bail after 5 s of
+    // total silence so the app harness restarts us; a fresh Bonjour resolve
+    // then picks up any new sender port too.
+    private func startTrafficWatchdog() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 5, repeating: .seconds(5), leeway: .milliseconds(100))
+        var lastSeenReplies: UInt64 = 0
+        var lastSeenAudio: UInt64 = 0
+        var quietRounds = 0
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let movedReplies = self.clockRepliesReceived != lastSeenReplies
+            let movedAudio = self.audioPacketsReceived != lastSeenAudio
+            if movedReplies || movedAudio {
+                lastSeenReplies = self.clockRepliesReceived
+                lastSeenAudio = self.audioPacketsReceived
+                quietRounds = 0
+                return
+            }
+            quietRounds += 1
+            // First round = no traffic at all since connect. Two rounds = a
+            // sender that went away mid-stream. Either way, recovery is the
+            // same: die, let the harness re-browse.
+            if quietRounds == 1 && self.clockRepliesReceived == 0 {
+                log("no traffic from sender in 5s — port likely filtered by " +
+                    "this network. Restarting receiver to re-discover sender.")
+                exit(1)
+            }
+            if quietRounds >= 2 {
+                log("sender stream silent for 10s — restarting receiver.")
+                exit(1)
+            }
+        }
+        timer.resume()
+        trafficWatchdog = timer
     }
 
     // MARK: - Receive

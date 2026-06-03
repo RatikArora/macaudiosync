@@ -98,10 +98,12 @@ Binaries land in `.build/release/audiosync-send` and
 ```
 
    That's it — it finds the sender via Bonjour, syncs, and starts playing.
-   If discovery is blocked (some networks filter mDNS), connect directly:
+   If discovery is blocked (some networks filter mDNS), connect directly
+   — the sender prints its `listening on UDP port <N>` on startup; use that
+   port (the default is an OS-assigned ephemeral port, not a fixed one):
 
 ```sh
-.build/release/audiosync-recv --connect <sender-name>.local:7805
+.build/release/audiosync-recv --connect <sender-name>.local:<port>
 ```
 
 **4. Play YouTube / Spotify / anything on the sender Mac.** All Macs play
@@ -121,7 +123,9 @@ audiosync-send:
   --capture            stream system audio via ScreenCaptureKit (original
                        keeps playing on the sender)
   --tone [freq]        stream a 440 Hz test tone instead (default mode)
-  --port <port>        UDP port (default 7805)
+  --port <port>        UDP port (default 0 = OS-assigned ephemeral port,
+                       avoids corporate Wi-Fi port blocklists; Bonjour
+                       publishes the actual port for `--browse` receivers)
   --buffer-ms <ms>     playback delay budget 20–5000 (default 150):
                        jitter headroom ↑, latency ↑ (see "Latency" below)
   --name <name>        Bonjour service name

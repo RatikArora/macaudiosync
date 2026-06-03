@@ -62,7 +62,13 @@ Two capture modes — pick deliberately:
    caffeinate -i .build/release/audiosync-send --party
    ```
 2. Confirm from its log, in order:
-   - `listening on UDP port 7805, Bonjour "<name>" (_audiosync._udp)`
+   - `listening on UDP port <N>, Bonjour "<name>" (_audiosync._udp)` — N is
+     OS-assigned (ephemeral 49152–65535) by default; use `--port <p>` to
+     pin. The randomized default dodges corporate Wi-Fi controllers that
+     filter specific ports (we hit one office filtering 7805 on 2026-06-03);
+     the IANA dynamic range is essentially never on those blocklists.
+     Receivers using `--browse` auto-pick up whatever port the sender
+     publishes via Bonjour; `--connect` users read N from this log line.
    - party: `local synced playback started` + `process-tap capture started
      (… original output MUTED)`; capture: `system audio capture started`
    - `clients=N packets/s=~300×N` once receivers join (`clients=0
@@ -85,7 +91,7 @@ line).
 1. Start:
    ```sh
    .build/release/audiosync-recv            # Bonjour auto-discovery
-   .build/release/audiosync-recv --connect <sender>.local:7805   # if mDNS blocked
+   .build/release/audiosync-recv --connect <sender>.local:<port> # if mDNS blocked (port from sender log)
    ```
 2. Confirm from its log:
    - `found sender: …` then `connected to …`
@@ -137,7 +143,7 @@ and `buffered` drains to 0, the SENDER died — restart it (keep it with
 Receivers play `--buffer-ms` behind the sender's own speakers. If sender and
 receivers are within earshot: mute the sender's speakers (capture still
 works — SCK taps audio before output volume), or also run a local receiver
-on the sender Mac (`audiosync-recv --connect 127.0.0.1:7805`) and mute the
+on the sender Mac (`audiosync-recv --connect 127.0.0.1:<port>`) and mute the
 original… which needs the not-yet-built process-tap mode (see Roadmap).
 
 ## Troubleshooting quick table
@@ -150,6 +156,7 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
 | `late` climbing / fill <100% | buffer too small for this network → raise `--buffer-ms` |
 | `decodeErr` nonzero | version mismatch between Macs → `git pull` + rebuild BOTH |
 | port in use | another sender instance: `pkill -f audiosync-send` |
+| receiver shows `connected to …` but `pkts=0 rtt=—` forever, ping/ARP between Macs works but `nc -uvz <peer> 7805` fails | corporate Wi-Fi controller filtering UDP/7805 specifically (other random high ports pass). Default since 2026-06-03 is OS-assigned ephemeral port to dodge this. The receiver now also self-restarts after 5 s of silence (watchdog in `ReceiverClient.startTrafficWatchdog`) so the app harness re-discovers via Bonjour. If the user pinned `--port` to a blocked port, drop the flag |
 | `buffered`/`margin` grow by seconds per second, `tsJit` climbs ~190/s, garbled audio | sender's tap delivered a different buffer layout than its nominal format claimed (frame count miscomputed → timeline runs 2× fast). Fixed 2026-06-03 by deriving layout from the buffer list's `mNumberChannels`; if it recurs, check the sender's one-time `tap IO layout:` log line and any `WARNING: tap timeline diverged` lines |
 
 ## Development rules (keep everything up to date)
