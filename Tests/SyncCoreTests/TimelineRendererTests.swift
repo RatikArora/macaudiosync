@@ -144,6 +144,25 @@ import Foundation
         #expect(stats.framesFilled == 0)
     }
 
+    @Test func coverageMaskMarksFilledAndGapFrames() {
+        // Two 100-frame chunks with a 50-frame hole: coverage must be true on
+        // the filled spans and false in the gap, so the concealer knows where
+        // to smooth.
+        let chunkA = AudioChunk(sequence: 1, playAtMasterNs: 0, sampleRate: rate, channels: channels,
+                                samples: [Float](repeating: 0.3, count: 100 * channels))
+        let chunkB = AudioChunk(sequence: 3, playAtMasterNs: nsForFrames(150), sampleRate: rate, channels: channels,
+                                samples: [Float](repeating: 0.9, count: 100 * channels))
+        var out = [Float](repeating: 0, count: 250 * channels)
+        var coverage: [Bool] = []
+        TimelineRenderer.render(chunks: [chunkA, chunkB], into: &out, frames: 250,
+                                channels: channels, sampleRate: rate,
+                                windowStartMasterNs: 0, coverage: &coverage)
+        #expect(coverage.count == 250)
+        for f in 0..<100 { #expect(coverage[f]) }
+        for f in 100..<150 { #expect(!coverage[f], "gap frame \(f) must be uncovered") }
+        for f in 150..<250 { #expect(coverage[f]) }
+    }
+
     @Test func subFrameTimestampJitterRoundsToNearestFrame() {
         // A chunk whose timestamp is off by 0.4 of a frame period (8.3µs)
         // must still land on the nearest frame slot — sub-frame network

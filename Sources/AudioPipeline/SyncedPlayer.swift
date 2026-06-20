@@ -33,7 +33,13 @@ public final class SyncedPlayer {
     private let sampleRate: Double
     private let channels: Int
     private var scratch: [Float]
+    private var coverage: [Bool] = []
     public let stats = RenderStatsAccumulator()
+
+    // Turns late/lost-packet silence gaps into click-free dips. A dropped
+    // packet would otherwise snap the signal to 0 and back — that step is the
+    // "break" you hear even when only a few ms went missing.
+    private let concealer: GapConcealer
 
     public init(
         buffer: JitterBuffer,
@@ -46,6 +52,7 @@ public final class SyncedPlayer {
         self.channels = channels
         self.masterClock = masterClock
         self.scratch = [Float](repeating: 0, count: Self.maxFrames * channels)
+        self.concealer = GapConcealer(channels: channels, sampleRate: sampleRate)
     }
 
     public func start() throws {
@@ -108,10 +115,15 @@ public final class SyncedPlayer {
             frames: frames,
             channels: channels,
             sampleRate: sampleRate,
-            windowStartMasterNs: windowStart
+            windowStartMasterNs: windowStart,
+            coverage: &coverage
         )
         buffer.dropChunks(endingBefore: windowStart)
         stats.add(renderStats)
+
+        // Replace hard-silence gaps with a click-free hold-and-fade so a late
+        // or lost packet is a brief dip, not a pop.
+        concealer.process(&scratch, coverage: coverage, frames: frames)
 
         // Copy scratch into the output buffer list (planar from a standard
         // format; handle a single interleaved buffer defensively too) and

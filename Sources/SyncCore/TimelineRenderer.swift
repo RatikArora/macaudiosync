@@ -31,8 +31,46 @@ public enum TimelineRenderer {
         sampleRate: Double,
         windowStartMasterNs: UInt64
     ) -> RenderStats {
+        var noCoverage: [Bool] = []
+        return render(chunks: chunks, into: &out, frames: frames, channels: channels,
+                      sampleRate: sampleRate, windowStartMasterNs: windowStartMasterNs,
+                      coverage: &noCoverage, wantCoverage: false)
+    }
+
+    /// As above, but also writes a per-frame coverage mask (`coverage[f]` is
+    /// true iff frame `f` was filled by real audio, false for a gap). The
+    /// playback layer uses this to conceal gaps with click-free fades instead
+    /// of emitting hard silence. `coverage` is resized to `frames` if needed.
+    @discardableResult
+    public static func render(
+        chunks: [AudioChunk],
+        into out: inout [Float],
+        frames: Int,
+        channels: Int,
+        sampleRate: Double,
+        windowStartMasterNs: UInt64,
+        coverage: inout [Bool]
+    ) -> RenderStats {
+        if coverage.count != frames { coverage = [Bool](repeating: false, count: frames) }
+        return render(chunks: chunks, into: &out, frames: frames, channels: channels,
+                      sampleRate: sampleRate, windowStartMasterNs: windowStartMasterNs,
+                      coverage: &coverage, wantCoverage: true)
+    }
+
+    @discardableResult
+    private static func render(
+        chunks: [AudioChunk],
+        into out: inout [Float],
+        frames: Int,
+        channels: Int,
+        sampleRate: Double,
+        windowStartMasterNs: UInt64,
+        coverage: inout [Bool],
+        wantCoverage: Bool
+    ) -> RenderStats {
         precondition(out.count >= frames * channels)
         for i in 0..<(frames * channels) { out[i] = 0 }
+        if wantCoverage { for i in 0..<frames { coverage[i] = false } }
 
         var stats = RenderStats()
         guard frames > 0 else { return stats }
@@ -61,6 +99,13 @@ public enum TimelineRenderer {
                 }
             }
             filledIntervals.append((dstStart, dstStart + n))
+        }
+
+        if wantCoverage {
+            for iv in filledIntervals {
+                let s = max(0, iv.start), e = min(frames, iv.end)
+                if s < e { for f in s..<e { coverage[f] = true } }
+            }
         }
 
         stats.framesFilled = unionLength(of: filledIntervals, clampedTo: frames)

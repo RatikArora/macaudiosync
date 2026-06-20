@@ -169,9 +169,13 @@ inserting silence rather than shifting timestamps.)
 ### Wi-Fi dropout bursts (observed in production 2026-06-03)
 
 Symptom: steady 100% fill with margin ~75 ms, but every 10–30 s one second
-shows `margin=…LOW`, `late` +60–100, fill 65–90% → audible break. Cause:
-macOS Wi-Fi power-save/scan bursts delaying packets 70–150 ms. The 16-bit wire
-format halves the traffic that causes congestion. The buffer no longer adapts
+shows `margin=…LOW`, `late` +60–100, fill 65–90% → a brief dropout. Cause:
+macOS Wi-Fi power-save/scan bursts delaying packets 70–150 ms. **`GapConcealer`
+(in `SyncedPlayer`) now makes those drops a click-free dip instead of a pop** —
+it holds+fades the last good sample and crossfades audio back in, so the abrupt
+step to/from zero that you actually *hear* is gone. The stats still report the
+underlying gap honestly (`fill`<100%, `late`), but it's far less audible. The
+16-bit wire format halves the traffic that causes congestion. The buffer no longer adapts
 (it broke audio — see Latency tuning), so you tune it by hand. If it breaks, in
 order: (1) wire the Macs (Ethernet or USB-C cable → `--buffer-ms 40–60`, zero
 dropouts); (2) QoS voice-class + AWDL p2p are ON by default — compare with
@@ -231,10 +235,12 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
    ```
 4. **Code layout:** `Sources/SyncCore` = pure logic (clock sync, jitter
    buffer, timeline renderer, resampler, wire protocol, `AudioCodec`,
-   `AdaptiveController` + `Feedback`) — fully unit-tested, no network/audio
-   imports; keep it that way. `Sources/AudioPipeline` = shared `SyncedPlayer`
-   (AVAudioEngine playback of a JitterBuffer against an injected master clock;
-   used by receivers and by the sender's party mode). `Sources/AudioSyncSender`,
+   `GapConcealer`, `AdaptiveController` + `Feedback`) — fully unit-tested, no
+   network/audio imports; keep it that way. `Sources/AudioPipeline` = shared
+   `SyncedPlayer` (AVAudioEngine playback of a JitterBuffer against an injected
+   master clock; used by receivers and by the sender's party mode — it runs the
+   renderer's per-frame coverage mask through `GapConcealer` so a late/lost
+   packet is a click-free dip, not a pop). `Sources/AudioSyncSender`,
    `Sources/AudioSyncReceiver` = thin Network.framework/ScreenCaptureKit/
    CoreAudio-tap shells. `AdaptiveController` is unit-tested but currently
    UNWIRED — the sender holds a fixed `bufferDelayNs` and never tunes it at
