@@ -61,34 +61,34 @@ func renderMaster(_ canvas: Double) -> NSBitmapImageRep {
     let cy = square.midY
     let w = square.width
 
-    // Soft radial glow behind the core.
-    let glowR = w * 0.30
+    // Sonar teal — matches the in-app logo and searching animation exactly.
+    let teal = NSColor(calibratedRed: 0.00, green: 0.82, blue: 0.93, alpha: 1.0)
+
+    // Soft teal glow behind the core.
+    let glowR = w * 0.28
     if let glow = NSGradient(colors: [
-        NSColor.white.withAlphaComponent(0.30),
-        NSColor.white.withAlphaComponent(0.0),
+        teal.withAlphaComponent(0.28),
+        teal.withAlphaComponent(0.0),
     ]) {
         glow.draw(in: NSRect(x: cx - glowR, y: cy - glowR, width: glowR * 2, height: glowR * 2),
                   relativeCenterPosition: NSPoint(x: 0, y: 0))
     }
 
-    // Concentric ripples, fading and thinning outward — a sound pulse
-    // mid-flight. Crisp circles (the organic motion lives in the animated
-    // loader); a luminous, slightly larger core reads as "an emitting source"
-    // rather than a flat target.
+    // Concentric teal ripples — sonar ping, mid-flight.
     let ringRadii = [0.175, 0.275, 0.375].map { $0 * w }
     let ringWidth = [0.032, 0.021, 0.013].map { $0 * w }
-    let ringAlpha = [0.92, 0.50, 0.24]
+    let ringAlpha: [CGFloat] = [0.92, 0.50, 0.24]
     for i in 0..<ringRadii.count {
         let r = ringRadii[i]
         let path = NSBezierPath(ovalIn: NSRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
         path.lineWidth = ringWidth[i]
-        NSColor.white.withAlphaComponent(ringAlpha[i]).set()
+        teal.withAlphaComponent(ringAlpha[i]).set()
         path.stroke()
     }
 
-    // Bright solid core = the source.
+    // Teal core = the emitting source.
     let coreR = w * 0.072
-    NSColor.white.set()
+    teal.set()
     NSBezierPath(ovalIn: NSRect(x: cx - coreR, y: cy - coreR, width: coreR * 2, height: coreR * 2)).fill()
 
     NSGraphicsContext.current?.restoreGraphicsState()

@@ -8,9 +8,9 @@ struct MacAudioSyncRootApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 520, minHeight: 560)
+                .frame(minWidth: 460, minHeight: 540)
         }
-        .defaultSize(width: 540, height: 600)
+        .defaultSize(width: 480, height: 600)
     }
 }
 
@@ -24,46 +24,39 @@ struct ContentView: View {
     @StateObject private var engine = EngineProcess()
 
     var body: some View {
-        ZStack {
-            // Whisper of the system accent at the top — barely there, just
-            // enough to lift the window off flat. No gradient slab.
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.05), Color.clear],
-                startPoint: .top, endPoint: .center
-            )
-            .ignoresSafeArea()
-
-            Group {
-                switch role {
-                case .none: RolePickerView(role: $role, showAbout: $showAbout)
-                case .sender: SenderView(role: $role, engine: engine)
-                case .receiver: ReceiverView(role: $role, engine: engine)
-                }
+        Group {
+            switch role {
+            case .none: RolePickerView(role: $role, showAbout: $showAbout)
+            case .sender: SenderView(role: $role, engine: engine)
+            case .receiver: ReceiverView(role: $role, engine: engine)
             }
-            .padding(26)
         }
-        .animation(.easeInOut(duration: 0.18), value: role)
+        .padding(24)
+        .animation(.spring(response: 0.32, dampingFraction: 0.88), value: role)
         .sheet(isPresented: $showAbout) { AboutSheet() }
     }
 }
 
 // MARK: - App logo (mirrors the icon)
 
-/// The brand surface — graphite, matching the app icon. The ripple mark sits
-/// on it; interactive accents use the native system accent color, never a
-/// gradient.
+/// Graphite surface matching the icon. The ripple mark sits on it.
 let brandInk = Color(red: 0.12, green: 0.12, blue: 0.135)
 
+/// The signature sonar accent — a single electric teal used only for the
+/// ripple mark, the searching pulse and active state indicators. One accent,
+/// used sparingly, so it always reads as meaningful.
+let sonarTeal = Color(red: 0.00, green: 0.82, blue: 0.93)
+
 struct AppLogo: View {
-    var size: CGFloat = 76
+    var size: CGFloat = 72
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
                 .fill(brandInk)
-                .shadow(color: .black.opacity(0.25), radius: size * 0.10, y: size * 0.05)
-            RipplesMark()
-                .frame(width: size * 0.66, height: size * 0.66)
+                .shadow(color: .black.opacity(0.22), radius: size * 0.12, y: size * 0.06)
+            RipplesMark(tint: sonarTeal)
+                .frame(width: size * 0.64, height: size * 0.64)
         }
         .frame(width: size, height: size)
     }
@@ -95,23 +88,24 @@ struct RipplesMark: View {
     }
 }
 
-/// The receiver's "searching" animation: soft concentric ripples expanding and
-/// fading outward from a gently breathing core — the Synced-Ripples motif,
-/// alive. Apple-style "looking for devices". (To be fine-tuned against the
-/// referenced Organic Loaders design once the design project is imported.)
+// MARK: - Searching animation
+
+/// Sonar ping — the hero searching animation. Teal rings expand and fade from
+/// a breathing core, like an actual sonar pulse looking for devices.
 struct SearchingRipples: View {
-    var size: CGFloat = 128
-    private let ripples = 3
-    private let period = 2.6
+    var size: CGFloat = 160
+    private let ripples = 4
+    private let period = 2.8
     @State private var go = false
 
     var body: some View {
         ZStack {
+            // Expanding rings — staggered so they flow continuously outward.
             ForEach(0..<ripples, id: \.self) { i in
                 Circle()
-                    .strokeBorder(Color.accentColor, lineWidth: 2.5)
-                    .scaleEffect(go ? 1.0 : 0.18)
-                    .opacity(go ? 0.0 : 0.55)
+                    .stroke(sonarTeal, lineWidth: max(1, 2.5 - Double(i) * 0.4))
+                    .scaleEffect(go ? 1.0 : 0.04)
+                    .opacity(go ? 0.0 : (0.7 - Double(i) * 0.1))
                     .animation(
                         .easeOut(duration: period)
                             .repeatForever(autoreverses: false)
@@ -119,12 +113,19 @@ struct SearchingRipples: View {
                         value: go
                     )
             }
+            // Breathing inner halo — the ambient glow of the core.
             Circle()
-                .fill(Color.accentColor)
-                .frame(width: size * 0.17, height: size * 0.17)
-                .scaleEffect(go ? 1.08 : 0.9)
-                .shadow(color: Color.accentColor.opacity(0.5), radius: go ? 12 : 4)
-                .animation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true), value: go)
+                .fill(sonarTeal.opacity(0.12))
+                .frame(width: size * 0.35, height: size * 0.35)
+                .scaleEffect(go ? 1.0 : 0.80)
+                .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true), value: go)
+            // The core dot.
+            Circle()
+                .fill(sonarTeal)
+                .frame(width: size * 0.12, height: size * 0.12)
+                .shadow(color: sonarTeal.opacity(0.65), radius: go ? 14 : 5)
+                .scaleEffect(go ? 1.06 : 0.88)
+                .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true).delay(0.2), value: go)
         }
         .frame(width: size, height: size)
         .onAppear { go = true }
@@ -143,59 +144,54 @@ struct RolePickerView: View {
     @State private var logoSpin = false
 
     var body: some View {
-        VStack(spacing: 18) {
-            Spacer(minLength: 4)
+        VStack(spacing: 0) {
+            Spacer(minLength: 8)
 
-            AppLogo()
-                .rotationEffect(.degrees(logoSpin ? 360 : 0))
-                .onTapGesture { logoTapped() }
-                .help("What happens if you keep tapping?")
-
-            VStack(spacing: 6) {
+            // Logo + name
+            VStack(spacing: 10) {
+                AppLogo()
+                    .rotationEffect(.degrees(logoSpin ? 360 : 0))
+                    .onTapGesture { logoTapped() }
+                    .help("What happens if you keep tapping?")
                 Text("Sonar")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                Text("Every Mac in the room. One perfectly synced sound.")
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                Text("Every Mac in the room, one sound.")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 16) {
+            Spacer(minLength: 28)
+
+            // Role cards — full-width, stacked
+            VStack(spacing: 10) {
                 RoleCard(
-                    icon: "antenna.radiowaves.left.and.right",
+                    icon: "waveform.circle.fill",
                     title: "Send",
-                    subtitle: "This Mac plays the music"
+                    subtitle: "This Mac plays the music",
+                    accent: sonarTeal
                 ) { role = .sender }
                 RoleCard(
-                    icon: "hifispeaker.2.fill",
+                    icon: "speaker.wave.2.circle.fill",
                     title: "Receive",
-                    subtitle: "This Mac is a speaker"
+                    subtitle: "This Mac is a speaker",
+                    accent: Color(NSColor.labelColor)
                 ) { role = .receiver }
             }
-            .padding(.top, 6)
 
-            // How it works, in one breath.
-            HStack(spacing: 14) {
-                HowToStep(number: "1", text: "Open this on every Mac")
-                Image(systemName: "arrow.right").foregroundStyle(.tertiary).imageScale(.small)
-                HowToStep(number: "2", text: "One sends, the rest receive")
-                Image(systemName: "arrow.right").foregroundStyle(.tertiary).imageScale(.small)
-                HowToStep(number: "3", text: "Same beat, same instant")
-            }
-            .padding(.top, 8)
-
-            Spacer()
+            Spacer(minLength: 24)
 
             HStack(spacing: 4) {
-                Text("Made with")
-                Image(systemName: "heart.fill")
-                    .foregroundStyle(.pink)
-                    .imageScale(.small)
-                Text("by Ratik Arora")
-                Text("·").foregroundStyle(.tertiary)
+                Text("Made with").foregroundStyle(.tertiary)
+                Image(systemName: "heart.fill").foregroundStyle(.pink).imageScale(.small)
+                Text("by Ratik Arora").foregroundStyle(.tertiary)
+                Text("·").foregroundStyle(.quaternary)
                 Button("About") { showAbout = true }
                     .buttonStyle(.link)
+                    .foregroundStyle(.secondary)
             }
-            .font(.callout)
-            .foregroundStyle(.secondary)
+            .font(.caption)
+
+            Spacer(minLength: 8)
         }
         .overlay {
             if showBurst {
@@ -207,7 +203,6 @@ struct RolePickerView: View {
     private func logoTapped() {
         logoTaps += 1
         if logoTaps % 5 == 0 {
-            // 🥚 Five taps: the logo drops the beat.
             withAnimation(.spring(response: 0.8, dampingFraction: 0.55)) { logoSpin.toggle() }
             burstID += 1
             showBurst = true
@@ -217,54 +212,67 @@ struct RolePickerView: View {
     }
 }
 
-struct HowToStep: View {
-    let number: String
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(number)
-                .font(.caption2.bold())
-                .frame(width: 16, height: 16)
-                .background(Circle().fill(.tint.opacity(0.2)))
-            Text(text).font(.caption).foregroundStyle(.secondary)
-        }
-    }
-}
-
 struct RoleCard: View {
     let icon: String
     let title: String
     let subtitle: String
+    var accent: Color = .accentColor
     let action: () -> Void
     @State private var hovering = false
+    @State private var pressed = false
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 12) {
+            HStack(spacing: 16) {
+                // Icon in a tinted circle
                 Image(systemName: icon)
-                    .font(.system(size: 34, weight: .medium))
-                    .foregroundStyle(hovering ? AnyShapeStyle(.white) : AnyShapeStyle(.tint))
-                Text(title).font(.title2.bold())
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(hovering ? AnyShapeStyle(.white.opacity(0.85)) : AnyShapeStyle(.secondary))
-                    .multilineTextAlignment(.center)
+                    .font(.system(size: 30, weight: .medium))
+                    .foregroundStyle(hovering ? .white : accent)
+                    .frame(width: 52, height: 52)
+                    .background(
+                        Circle().fill(hovering ? accent : accent.opacity(0.1))
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(hovering ? .white : .primary)
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(hovering ? .white.opacity(0.75) : .secondary)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(hovering ? Color.white.opacity(0.7) : Color(NSColor.tertiaryLabelColor))
             }
-            .frame(width: 180, height: 150)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
             .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(hovering
-                          ? AnyShapeStyle(Color.accentColor)
-                          : AnyShapeStyle(.quaternary.opacity(0.5)))
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(hovering ? accent : Color(NSColor.quaternaryLabelColor).opacity(0))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(hovering ? Color.clear : Color(NSColor.separatorColor).opacity(0.6), lineWidth: 0.5)
+                    )
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(.background)
+                    )
             )
-            .foregroundStyle(hovering ? Color.white : Color.primary)
-            .scaleEffect(hovering ? 1.04 : 1.0)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .scaleEffect(pressed ? 0.98 : 1.0)
         }
         .buttonStyle(.plain)
         .onHover { inside in
-            withAnimation(.easeOut(duration: 0.15)) { hovering = inside }
+            withAnimation(.easeOut(duration: 0.14)) { hovering = inside }
         }
+        .simultaneousGesture(DragGesture(minimumDistance: 0)
+            .onChanged { _ in withAnimation(.easeOut(duration: 0.08)) { pressed = true } }
+            .onEnded { _ in withAnimation(.spring(response: 0.3)) { pressed = false } }
+        )
     }
 }
 
@@ -690,14 +698,23 @@ struct HeaderBar: View {
                 engine.stop()
                 role = .none
             } label: {
-                Label("Back", systemImage: "chevron.left")
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Back")
+                        .font(.subheadline)
+                }
+                .foregroundStyle(.secondary)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             Spacer()
-            Text(title).font(.title2.bold())
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
             Spacer()
-            Label("Back", systemImage: "chevron.left").hidden() // balance
+            // Balance the back button
+            Text("Back").font(.subheadline).hidden()
         }
+        .padding(.bottom, 4)
     }
 }
 
@@ -706,16 +723,31 @@ struct StatusRow: View {
     let text: String
 
     var body: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(running ? Color.green : Color.secondary.opacity(0.4))
-                .frame(width: 10, height: 10)
-                .shadow(color: running ? .green.opacity(0.6) : .clear, radius: 4)
-            Text(text).font(.headline)
+        HStack(spacing: 8) {
+            // Live indicator dot
+            ZStack {
+                if running {
+                    Circle()
+                        .fill(Color.green.opacity(0.3))
+                        .frame(width: 16, height: 16)
+                        .scaleEffect(running ? 1.0 : 0.6)
+                        .animation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true), value: running)
+                }
+                Circle()
+                    .fill(running ? Color.green : Color.secondary.opacity(0.35))
+                    .frame(width: 8, height: 8)
+            }
+            Text(text)
+                .font(.system(size: 14, weight: .medium))
             Spacer()
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color(NSColor.separatorColor).opacity(0.5), lineWidth: 0.5)
+        )
     }
 }
 
@@ -724,9 +756,13 @@ struct SettingsCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) { content }
-            .padding(12)
+            .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color(NSColor.separatorColor).opacity(0.5), lineWidth: 0.5)
+            )
     }
 }
 
