@@ -2,4 +2,4 @@
 .DS_Store
 .swiftpm/
 dist/
-release/MacAudioSync.app/
+release/*.app/

@@ -25,23 +25,23 @@ Sender Mac (master)                     Each receiver Mac
 
 ## The app (easiest way)
 
-**Download:** [`release/MacAudioSync.app.zip`](release/MacAudioSync.app.zip)
+**Download:** [`release/Sonar.app.zip`](release/Sonar.app.zip)
 — universal (Apple Silicon + Intel), macOS 13+.
 
 **First open on each Mac** (the app is ad-hoc signed, not notarized, so
 macOS blocks downloaded copies once): double-click it, dismiss the "can't
 be opened" dialog with **Done**, then System Settings → Privacy & Security
 → scroll down → **Open Anyway**. Or in Terminal:
-`xattr -cr /path/to/MacAudioSync.app`. After that it opens normally
+`xattr -cr /path/to/Sonar.app`. After that it opens normally
 forever. (Apps built locally with `./make-app.sh` are never blocked.)
 
 Or build it yourself:
 
 ```sh
-./make-app.sh        # builds dist/MacAudioSync.app — universal (Apple Silicon + Intel)
+./make-app.sh        # builds dist/Sonar.app — universal (Apple Silicon + Intel)
 ```
 
-Double-click `MacAudioSync.app`, pick **Send** on the Mac playing the music
+Double-click `Sonar.app`, pick **Send** on the Mac playing the music
 and **Receive** on every other Mac. That's the whole flow. Share the app by
 AirDropping/zipping it to any Mac (macOS 13+); first launch on another Mac
 needs right-click → Open (it's ad-hoc signed, no developer account).

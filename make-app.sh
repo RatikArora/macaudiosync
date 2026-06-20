@@ -1,11 +1,9 @@
 #!/bin/bash
-# Builds dist/MacAudioSync.app — a shareable, double-clickable, UNIVERSAL
-# (Apple Silicon + Intel) app that wraps the audiosync engines with a simple
-# UI. Works on any Mac running macOS 13+.
+# Builds dist/Sonar.app — shareable, double-clickable, UNIVERSAL
+# (Apple Silicon + Intel). Works on any Mac running macOS 13+.
 #
-# Share it by AirDropping/zipping dist/MacAudioSync.app. It is ad-hoc signed,
-# so on another Mac the FIRST launch needs: right-click the app -> Open ->
-# Open (Gatekeeper), or `xattr -cr MacAudioSync.app` after unzipping.
+# First launch on another Mac needs: right-click -> Open (Gatekeeper),
+# or xattr -cr Sonar.app after unzipping.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -17,7 +15,7 @@ swift build -c release --triple x86_64-apple-macosx13.0
 ARM=.build/arm64-apple-macosx/release
 X86=.build/x86_64-apple-macosx/release
 
-APP=dist/MacAudioSync.app
+APP=dist/Sonar.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp App/Info.plist "$APP/Contents/Info.plist"
