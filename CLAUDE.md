@@ -23,9 +23,14 @@ Ask the user which role this Mac plays if it isn't obvious from their request.
 SwiftUI shell in `Sources/MacAudioSyncApp` that bundles and drives the two
 CLI engines as child processes (it contains NO audio/network code; it parses
 the engines' log lines for status — if you change log formats, update
-`EngineProcess.parse`). Receiver runs with auto-restart: any engine death →
-relaunch after 2 s until the user stops it. Sender auto-selects `--party`
-(macOS 14.2+) or `--capture` (older). The app is the preferred thing to give
+`EngineProcess.parse`. It now also parses `join-code=`, `diag=`, and the
+`via <transport>` suffix on the connected line). Receiver runs with
+auto-restart (now a backstop only — the engine self-heals network changes
+in-process without dying; see below). Sender auto-selects `--party`
+(macOS 14.2+) or `--capture` (older), and stays `autoRestart=false` on
+purpose (a process restart in party mode would un-mute/re-mute system audio).
+The receiver UI has a **Manual Connect** field (→ `--connect`); the sender UI
+shows a copyable **join code**. The app is the preferred thing to give
 non-technical users; `dist/` is gitignored, rebuild after every engine change.
 
 ## First-time setup (either role)
@@ -69,10 +74,17 @@ Two capture modes — pick deliberately:
      the IANA dynamic range is essentially never on those blocklists.
      Receivers using `--browse` auto-pick up whatever port the sender
      publishes via Bonjour; `--connect` users read N from this log line.
+   - `join-code=<ip>:<port> (en0)` — copyable address for `--connect` /
+     the app's Manual Connect when discovery is blocked. Re-emitted on every
+     listener (re)bind, so after a network change read the newest one.
    - party: `local synced playback started` + `process-tap capture started
      (… original output MUTED)`; capture: `system audio capture started`
    - `clients=N packets/s=~300×N` once receivers join (`clients=0
      packets/s=0` just means nobody has connected yet — not an error).
+   - on a Wi-Fi change: `network changed … — rebuilding listener` then a
+     fresh `listening on …` + `join-code=` — the process does NOT restart
+     (party-mode mute/tap stay up); `SenderServer.rebuildListener` re-binds
+     and re-publishes Bonjour on the new interface.
 3. User plays audio; that's it. NOTE: in party mode, killing the sender
    un-mutes the system (tap dies with the process) — audio reverts to
    normal local playback, nothing is left broken.
@@ -91,14 +103,26 @@ line).
 1. Start:
    ```sh
    .build/release/audiosync-recv            # Bonjour auto-discovery
-   .build/release/audiosync-recv --connect <sender>.local:<port> # if mDNS blocked (port from sender log)
+   .build/release/audiosync-recv --connect <ip>:<port> # if mDNS blocked (use the sender's join-code)
    ```
 2. Confirm from its log:
-   - `found sender: …` then `connected to …`
+   - `found sender: …` then `connected to … via <transport>` (transport is
+     `Wi-Fi router` / `wired Ethernet` / `peer-to-peer (AWDL)`)
    - `playback engine started (48000 Hz, 2ch)`
    - stats line each second — healthy looks like:
      `sync offset=0.0xx ms rtt<1000µs … margin=NNms … (100% fill) … late=0 decodeErr=0`
 3. Audio starts ~0.3 s after connect (clock-sync warmup burst).
+
+**Self-healing (no process restart).** The receiver keeps its audio engine,
+jitter buffer and clock estimate alive for the whole process and only swaps
+its `NWConnection` on trouble. An `NWPathMonitor` reconnects proactively on a
+Wi-Fi/hotspot change; a traffic watchdog reconnects after 3 s of silence
+(silently-dead sender, filtered/isolated network). All triggers funnel through
+one generation-guarded `ReceiverClient.reconnect`. Resume is near-instant
+because the master-clock offset survives the swap. On resume you'll see
+`stream resumed — reconnected to … via …`. If it can't get audio it prints a
+diagnosis line: `diag=no-mdns` (discovery blocked → Manual Connect / hotspot)
+or `diag=isolated` (client isolation / port filter → hotspot or cable).
 
 Test/CI flags: `--headless` (full pipeline, no speakers), `--exit-after <s>`.
 
@@ -109,34 +133,48 @@ Test/CI flags: `--headless` (full pipeline, no speakers), `--exit-after <s>`.
 | `offset` | master-clock offset estimate | stable, sub-ms changes |
 | `rtt` | best probe round-trip | <1 ms LAN, <10 ms Wi-Fi |
 | `drift` | crystal skew estimate (ppm) | settles within ±50 |
-| `buffered` | audio queued ahead | ≈ sender `--buffer-ms` |
+| `buffered` | audio queued ahead | ≈ the sender's CURRENT (adaptive) buffer, not necessarily the `--buffer-ms` you set |
 | `margin` | min arrival headroom last second | > 30 ms; `LOW` warning printed under 15 ms |
 | `fill` | % of frames actually played | 100% |
 | `late` | chunks that arrived too late | 0 (occasional 1–2 on Wi-Fi ok) |
 | `peak` | max |sample| rendered last second | >0 when audio is actually playing; 0.00 = silence on the wire (nothing playing on sender) |
-| `tsJit` | consecutive chunks whose timestamps don't abut (>30µs) | 0 — ALWAYS. Nonzero = sender capture timestamps jitter → crackle at 100% fill; bug on the sender side (see gotcha below) |
-| `decodeErr` | malformed packets | 0 |
+| `tsJit` | consecutive chunks whose timestamps don't abut (>30µs) | 0 — ALWAYS. Nonzero = sender capture timestamps jitter → crackle at 100% fill; bug on the sender side (see gotcha below). The adaptive-buffer slew is deliberately capped at 25µs/packet to stay under this threshold, so it must NOT make tsJit climb |
+| `decodeErr` | malformed packets | 0 (also counts wrong-`--key` and unknown-codec packets) |
 
-### Latency tuning (sender's `--buffer-ms`, default 150)
+The receiver also sends a once-a-second `feedback` packet upstream (min
+margin, late delta, fill‰, buffered, rtt) — only while actively receiving.
+The sender aggregates the worst case across receivers and drives its
+adaptive buffer from it (`SenderServer.adaptTick` → `AdaptiveController`).
+You'll see `adaptive buffer A→B ms (worst: …)` on the sender when it moves.
 
-End-to-end delay ≈ buffer-ms + ~25–40 ms fixed stack floor. Watch the
-receiver's `margin=`: you can lower buffer-ms by about `margin − 30 ms`.
-Raise it if `late>0` or fill < 100%. Wired LAN: 40–60. Good 5 GHz Wi-Fi:
-100–150. Congested Wi-Fi: 250–500. Sub-10 ms is NOT achievable (capture
-blocks + DAC alone exceed it) — don't promise it; receiver↔receiver skew is
-already sub-ms, which is what audible sync quality depends on.
+### Latency tuning (sender's `--buffer-ms`, default 150 — now a STARTING value)
+
+End-to-end delay ≈ buffer-ms + ~25–40 ms fixed stack floor. **The sender now
+auto-tunes the buffer** from receiver feedback (raises on `late`/low-margin/
+low-fill, eases back down — by ≤10 ms/5 s — when sustained-healthy; floor 40,
+ceil 500; `AdaptiveController`). So `--buffer-ms` is the *starting* point;
+on a clean network it'll drift down toward the floor (lower latency), and on
+a bursty one it climbs on its own. To still tune by hand, watch `margin=`:
+manual floor is roughly `margin − 30 ms`. Wired LAN settles ~40–60. Good
+5 GHz Wi-Fi ~100–150. Congested Wi-Fi holds higher. Sub-10 ms is NOT
+achievable (capture blocks + DAC alone exceed it) — don't promise it;
+receiver↔receiver skew is already sub-ms, which is what audible sync depends on.
 
 ### Wi-Fi dropout bursts (observed in production 2026-06-03)
 
 Symptom: steady 100% fill with margin ~75 ms, but every 10–30 s one second
 shows `margin=…LOW`, `late` +60–100, fill 65–90% → audible break. Cause:
-macOS Wi-Fi power-save/scan bursts delaying packets 70–150 ms. Fixes in
-order: (1) wire the Macs (Ethernet or USB-C cable → buffer 40–60 ms, zero
-dropouts); (2) QoS voice-class + AWDL p2p are ON by default — compare with
-`--no-p2p` on BOTH sides if things get worse; (3) raise `--buffer-ms` above
-the worst burst (250 usually silences busy Wi-Fi). If `pkts` stops climbing
-and `buffered` drains to 0, the SENDER died — restart it (keep it with
-`caffeinate -i` so the Mac doesn't sleep it).
+macOS Wi-Fi power-save/scan bursts delaying packets 70–150 ms. The adaptive
+buffer now reacts to this on its own (the `late`/low-fill feedback raises the
+buffer within seconds), and the 16-bit wire format halves the traffic that
+causes congestion. If it still breaks, in order: (1) wire the Macs (Ethernet
+or USB-C cable → buffer eases to 40–60 ms, zero dropouts); (2) QoS voice-class
++ AWDL p2p are ON by default — compare with `--no-p2p` on BOTH sides if things
+get worse; (3) raise the *starting* `--buffer-ms`. If `pkts` stops climbing
+and `buffered` drains to 0, the SENDER's audio source died (or the sender
+process exited) — but a mere Wi-Fi change no longer kills either side; the
+receiver prints `reconnecting …` and resumes by itself. Keep the sender under
+`caffeinate -i` so the Mac doesn't sleep it.
 
 ### Same room / echo
 
@@ -151,12 +189,14 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
 | symptom | cause / fix |
 |---|---|
 | `-3801` on sender | Screen Recording permission missing (see Sender §1) |
-| receiver stuck `browsing for senders` | mDNS blocked → use `--connect`; check both Macs on same network; check macOS Local Network permission |
-| `pkts=0` but sync works | audio source died on sender — check sender log |
-| `late` climbing / fill <100% | buffer too small for this network → raise `--buffer-ms` |
-| `decodeErr` nonzero | version mismatch between Macs → `git pull` + rebuild BOTH |
+| receiver logs `diag=no-mdns` / stuck `browsing for senders` | mDNS/Bonjour blocked → use the sender's `join-code=` with `--connect` (or the app's Manual Connect); check both Macs on same network + macOS Local Network permission |
+| receiver logs `diag=isolated` (connected, but no audio) | network blocks device-to-device traffic (client isolation) or filters our port → use a personal hotspot or a cable; or `--no-p2p` toggling. This is THE common corporate-Wi-Fi failure |
+| `pkts=0` / `peak=0.00` but sync works | audio source died on sender (nothing playing) — check sender log |
+| `late` climbing / fill <100% | usually self-corrects (adaptive buffer raises); if not, raise the starting `--buffer-ms` or wire the Macs |
+| `decodeErr` nonzero | wire-version mismatch (must be v2 on BOTH → `git pull` + rebuild BOTH), OR wrong `--key`, OR unknown codec tag |
 | port in use | another sender instance: `pkill -f audiosync-send` |
-| receiver shows `connected to …` but `pkts=0 rtt=—` forever, ping/ARP between Macs works but `nc -uvz <peer> 7805` fails | corporate Wi-Fi controller filtering UDP/7805 specifically (other random high ports pass). Default since 2026-06-03 is OS-assigned ephemeral port to dodge this. The receiver now also self-restarts after 5 s of silence (watchdog in `ReceiverClient.startTrafficWatchdog`) so the app harness re-discovers via Bonjour. If the user pinned `--port` to a blocked port, drop the flag |
+| stream breaks on Wi-Fi/hotspot switch | should NOT happen anymore — both sides watch `NWPathMonitor` and re-establish in-process (receiver `reconnect`, sender `rebuildListener`). If it does, check for `network changed …` / `reconnecting …` lines and that Local Network permission is granted on the new network |
+| receiver shows `connected to …` but `pkts=0 rtt=—`, ping/ARP work but `nc -uvz <peer> <port>` fails | corporate Wi-Fi controller filtering our UDP port (other random high ports pass). Default is an OS-assigned ephemeral port to dodge this; the receiver now prints `diag=isolated` and keeps retrying via `ReceiverClient.reconnect` (re-resolving the port). If the user pinned `--port` to a blocked port, drop the flag |
 | `buffered`/`margin` grow by seconds per second, `tsJit` climbs ~190/s, garbled audio | sender's tap delivered a different buffer layout than its nominal format claimed (frame count miscomputed → timeline runs 2× fast). Fixed 2026-06-03 by deriving layout from the buffer list's `mNumberChannels`; if it recurs, check the sender's one-time `tap IO layout:` log line and any `WARNING: tap timeline diverged` lines |
 
 ## Development rules (keep everything up to date)
@@ -165,9 +205,15 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
    share state only through this repo (github.com/RatikArora/macaudiosync).
    After changing behavior, flags, stats format, or procedures: update
    README.md AND this file in the same commit.
-2. **Wire compatibility:** if you change `Wire`/packet layout, bump
-   `Wire.version` — receivers reject mismatched versions as `decodeErr`,
-   and every Mac must be rebuilt. Avoid breaking it casually.
+2. **Wire compatibility:** `Wire.version` is **2** (v2 added the per-packet
+   audio codec byte + the client→server `feedback` message). If you change
+   `Wire`/packet layout, bump the version — receivers reject mismatched
+   versions, and every Mac must be rebuilt. Audio packets carry an
+   `AudioCodec` tag (per-packet, so the tier can change mid-stream): `0`
+   Float32 (bit-exact, used by tests + local party playback), `1` Int16
+   (default on the wire), `2` Opus (reserved, not implemented). `feedback` is
+   client→server only — the receiver ignores it if echoed back, symmetric to
+   how the sender ignores `audio`/`clockReply` from clients.
 3. **Tests:** run `./run-tests.sh` (NOT bare `swift test` — only Command
    Line Tools are installed, so XCTest is absent and Swift Testing needs
    the framework paths the script adds). All tests must pass before pushing.
@@ -178,13 +224,15 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
    # expect: 100% fill, silent=0, late=0, offset ~0.01ms; then pkill -f audiosync-
    ```
 4. **Code layout:** `Sources/SyncCore` = pure logic (clock sync, jitter
-   buffer, timeline renderer, resampler, wire protocol) — fully
-   unit-tested, no network/audio imports; keep it that way.
-   `Sources/AudioPipeline` = shared `SyncedPlayer` (AVAudioEngine playback
-   of a JitterBuffer against an injected master clock; used by receivers
-   and by the sender's party mode). `Sources/AudioSyncSender`,
+   buffer, timeline renderer, resampler, wire protocol, `AudioCodec`,
+   `AdaptiveController` + `Feedback`) — fully unit-tested, no network/audio
+   imports; keep it that way. `Sources/AudioPipeline` = shared `SyncedPlayer`
+   (AVAudioEngine playback of a JitterBuffer against an injected master clock;
+   used by receivers and by the sender's party mode). `Sources/AudioSyncSender`,
    `Sources/AudioSyncReceiver` = thin Network.framework/ScreenCaptureKit/
-   CoreAudio-tap shells.
+   CoreAudio-tap shells. The adaptive control LAW lives in SyncCore
+   (`AdaptiveController`, unit-tested); the sender shell (`SenderServer`) just
+   feeds it worst-case feedback and applies the buffer via a slew.
 5. **Known macOS gotchas (cost real debugging time):**
    - Objects created inside switch-case blocks in `main.swift` top-level
      code are RELEASED when the block ends — dispatch timers/NWBrowser
@@ -203,6 +251,26 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
      clock with a gentle servo (see ProcessTapCapture.process). Also: do no
      heavy work (resample/encode/send) inside a Core Audio IO callback —
      hop to a serial queue.
+   - **Reconnect lifecycle (network resilience):** a cancelled `NWConnection`
+     can still deliver one in-flight callback. Every connection callback is
+     guarded by a **generation counter** (`gen == self.generation`) so stale
+     ones no-op. All reconnect triggers (path change, watchdog, `.failed`,
+     receive error) funnel through ONE serialized `reconnect()` on
+     `audiosync.recv.net`; never call `exit()` for a network problem. NEVER
+     `removeAll()` the jitter buffer or recreate `ClockSynchronizer` on
+     reconnect — the master-clock offset is per-boot and stays valid, so
+     keeping it is what makes resume instant. `NWPathMonitor` only reconnects
+     on a *transition* (dedupe on status+interface-set), and holds (renders
+     silence) while the path is unsatisfied. Same generation+debounce pattern
+     guards the sender's `rebuildListener`.
+   - **Adaptive-buffer slew must stay under the tsJit threshold.** The sender
+     slews its effective buffer toward the controller's target ≤25 µs per
+     packet (`SenderServer.maxBufferSlewNs`) — deliberately below the
+     receiver's 30 µs `tsJit` boundary so adaptation is gap-free and never
+     looks like crackle. If you raise that cap past 30 µs, tsJit will climb
+     during every buffer change. The controller steps relative to the CURRENT
+     effective buffer (not an accumulator) so target can't run away from the
+     slow slew.
 6. **Core invariant:** receivers never "play the next packet"; every render
    asks "what does the master timeline put in this window?" Alignment is
    recomputed from timestamps every callback so errors can't accumulate.
@@ -211,10 +279,18 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
 ## Roadmap (next features, in value order)
 
 1. ~~Process-tap capture~~ — DONE (--party mode, 2026-06-03).
-2. Device-latency calibration (`kAudioDevicePropertyLatency`) per receiver.
-3. Micro-resampler driven by `DriftEstimator` (smooth rate-matching instead
-   of frame repeat/skip at chunk boundaries).
-4. Opus compression for WAN; DTLS if streaming beyond the home LAN.
-5. Party-mode niceties: handle default-output-device changes mid-stream
+2. ~~Seamless network-change recovery~~ — DONE (2026-06-20): `NWPathMonitor`
+   + in-process reconnect/`rebuildListener`, no teardown on Wi-Fi/hotspot
+   switch. ~~Honest connect diagnosis~~ (`diag=no-mdns`/`isolated`) + join
+   code + Manual Connect — DONE. ~~Int16 wire codec + adaptive buffer~~ — DONE.
+3. **Opus codec tier** (`AudioCodec.opus` is reserved): perceptual VBR + FEC/
+   PLC for very-bad-Wi-Fi/WAN. Needs a libopus dependency (vendored SwiftPM C
+   target or a package) behind a build flag, with capability negotiation so a
+   receiver that lacks it still gets PCM. The codec seam + per-packet tag are
+   already in place.
+4. Device-latency calibration (`kAudioDevicePropertyLatency`) per receiver.
+5. Micro-resampler driven by `DriftEstimator` for DAC drift (the adaptive
+   buffer already uses a smooth sub-threshold slew — extend that technique).
+6. Party-mode niceties: handle default-output-device changes mid-stream
    (rebuild the aggregate); video lip-sync mode (small fixed buffer +
    wired link guidance).

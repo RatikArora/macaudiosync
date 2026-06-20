@@ -48,8 +48,21 @@ needs right-click → Open (it's ad-hoc signed, no developer account).
 
 - Sender uses party mode automatically (zero perceived latency); Macs older
   than 14.2 fall back to capture mode.
-- Receivers auto-discover the sender and **auto-reconnect forever** if the
-  sender restarts or Wi-Fi blips — the flow doesn't break.
+- **Survives network changes.** Switch Wi-Fi, move to a phone hotspot, or
+  roam between APs and the audio keeps going — both sides watch the network
+  path and re-establish the stream underneath the still-running speakers
+  (a ~1 s gap, not a teardown). The sender re-publishes itself on the new
+  network without restarting.
+- **Tells you why it can't connect.** On a locked-down network the receiver
+  says whether discovery is blocked (*use Manual Connect*) or the network is
+  blocking device-to-device traffic / *client isolation* (*use a hotspot or a
+  cable*) — instead of failing silently. The sender shows a copyable **join
+  code** for the Manual Connect field.
+- **Self-tuning & lighter on the network.** Audio is sent as 16-bit PCM
+  (half the bandwidth of before, perceptually identical), and the sender
+  continuously tunes its latency buffer from each receiver's live health —
+  raising it when the network struggles, lowering it when it's clean — with
+  no audible change.
 - The app drives the same engines as the CLI below; permission prompts
   (System Audio Recording, Local Network) belong to the app itself.
 
@@ -98,13 +111,22 @@ Binaries land in `.build/release/audiosync-send` and
 ```
 
    That's it — it finds the sender via Bonjour, syncs, and starts playing.
-   If discovery is blocked (some networks filter mDNS), connect directly
-   — the sender prints its `listening on UDP port <N>` on startup; use that
-   port (the default is an OS-assigned ephemeral port, not a fixed one):
+   It also rides through Wi-Fi changes: switch networks or move to a hotspot
+   and it re-discovers and resumes on its own (the master clock is preserved,
+   so resume is near-instant).
+
+   If discovery is blocked (some networks filter mDNS), connect directly. The
+   sender prints a copyable **join code** on startup — `join-code=<ip>:<port>`
+   (re-printed after any network change, since the address changes) — use it:
 
 ```sh
-.build/release/audiosync-recv --connect <sender-name>.local:<port>
+.build/release/audiosync-recv --connect <ip>:<port>
 ```
+
+   If the receiver connects but no audio flows, it will say so explicitly:
+   `diag=no-mdns` means discovery is blocked (use the join code above);
+   `diag=isolated` means the network blocks device-to-device traffic (client
+   isolation) — use a personal hotspot or a cable between the Macs.
 
 **4. Play YouTube / Spotify / anything on the sender Mac.** All Macs play
    it together. In `--party` mode that includes the sender's own speakers,
@@ -126,13 +148,18 @@ audiosync-send:
   --port <port>        UDP port (default 0 = OS-assigned ephemeral port,
                        avoids corporate Wi-Fi port blocklists; Bonjour
                        publishes the actual port for `--browse` receivers)
-  --buffer-ms <ms>     playback delay budget 20–5000 (default 150):
-                       jitter headroom ↑, latency ↑ (see "Latency" below)
+  --buffer-ms <ms>     STARTING playback delay budget 20–5000 (default 150);
+                       the sender then auto-tunes it from receiver feedback
+                       (raises under jitter, lowers when clean). See "Latency".
   --name <name>        Bonjour service name
+  --no-p2p             disable the AWDL peer-to-peer link (router only)
+  --key <passphrase>   encrypt + authenticate the stream (both sides must match)
 
 audiosync-recv:
   --browse             auto-discover via Bonjour (default)
-  --connect host:port  connect to a specific sender
+  --connect host:port  connect to a specific sender (use the sender's join code)
+  --no-p2p             disable the AWDL peer-to-peer link (router only)
+  --key <passphrase>   decrypt an encrypted stream (must match the sender)
   --headless           full pipeline, no speakers; prints fill stats (testing)
   --exit-after <s>     quit after N seconds (testing)
 ```
@@ -196,12 +223,19 @@ effectiveness:
 1. **Wire the Macs**: Ethernet, or a USB-C/Thunderbolt cable between them
    (creates a direct network link). Buffer can then drop to 40–60 ms and
    dropouts disappear entirely.
-2. **Built-in QoS + peer-to-peer** (on by default since v1.1): packets are
+2. **Adaptive buffer** (automatic): the sender watches each receiver's live
+   margin/late/fill and raises its buffer the moment a receiver struggles,
+   then eases it back down when things are clean — so you don't have to hand-
+   tune `--buffer-ms` for a bursty network. The change is slewed in a few µs
+   per packet (below the timestamp-jitter threshold), so it's gap-free and
+   inaudible. The 16-bit wire format (half the bytes) also reduces the
+   congestion that causes bursts in the first place.
+3. **Built-in QoS + peer-to-peer** (on by default since v1.1): packets are
    marked voice-class (Wi-Fi WMM priority, exempt from power-save
    buffering) and the AWDL direct Mac-to-Mac link is enabled. If audio gets
    *worse* on your network, try `--no-p2p` on both sides.
-3. **Raise `--buffer-ms`** until the `late` counter stops growing — set it
-   above your worst observed burst (typically 250 on busy Wi-Fi).
+4. **Raise the starting `--buffer-ms`** if even the adaptive floor isn't
+   enough on a very bad network — set it above your worst observed burst.
 
 Two different "latencies" matter — don't confuse them:
 
@@ -217,14 +251,18 @@ Two different "latencies" matter — don't confuse them:
 
 ## Testing
 
-47 tests cover the wire protocol (round-trips, truncation/garbage fuzzing,
-MTU bound), clock sync (convergence under 4 ms asymmetric jitter, 10-minute
-drift tracking, nonsense rejection), the jitter buffer (reordering, dedup,
-late-drop, concurrency), the timeline renderer (sample-exact alignment,
-gaps, overlap accounting), and a full end-to-end simulation: two clocks with
-different epochs *and* frequency skew, real wire encoding, random delay,
-reordering, duplication and loss — asserting the receiver reproduces the
-sent audio **bit-exactly** at the right master-time position.
+76 tests cover the wire protocol (round-trips incl. the v2 codec byte and
+feedback message, truncation/garbage fuzzing, MTU bound), the audio codecs
+(Float32 bit-exact, Int16 within half an LSB and clamp-safe), the adaptive
+controller (raise-on-distress, hysteresis on relax, floor/ceiling clamps,
+worst-case aggregation), clock sync (convergence under 4 ms asymmetric
+jitter, 10-minute drift tracking, nonsense rejection), the jitter buffer
+(reordering, dedup, late-drop, concurrency), the timeline renderer
+(sample-exact alignment, gaps, overlap accounting), and a full end-to-end
+simulation: two clocks with different epochs *and* frequency skew, real wire
+encoding, random delay, reordering, duplication and loss — asserting the
+receiver reproduces the sent audio **bit-exactly** at the right master-time
+position.
 
 ```sh
 ./run-tests.sh        # wraps `swift test` (adds Testing.framework paths
@@ -247,14 +285,18 @@ Healthy output looks like `filled=48000 silent=0 ... (100% fill)` with
   deadlines, but each device adds its own DAC latency (~5–15 ms, similar
   across MacBooks, so in practice they match closely). A calibration step
   could trim this with `kAudioDevicePropertyLatency`.
-- **No micro-resampler yet.** Each Mac's DAC crystal runs a few ppm off;
-  alignment is recomputed every render window so drift cannot *accumulate*,
-  but the correction lands as a repeated/skipped frame at a chunk boundary
-  every few tens of seconds (in practice inaudible). The measured `drift
-  ppm` from `DriftEstimator` is the input a future resampler (smooth
-  rate-matching, Snapcast-style) would use.
-- **Uncompressed PCM only** (≈1.5 Mbps/receiver) — trivial for any LAN;
-  Opus would cut it 10× if you ever want WAN streaming.
+- **No micro-resampler for DAC drift yet.** Each Mac's DAC crystal runs a
+  few ppm off; alignment is recomputed every render window so drift cannot
+  *accumulate*, but the correction still lands as a repeated/skipped frame at
+  a chunk boundary every few tens of seconds (in practice inaudible). The
+  adaptive *buffer* already uses a smooth sub-threshold slew (a step toward
+  smooth rate-matching); applying the same technique to DAC drift, driven by
+  `DriftEstimator`, is the next step.
+- **16-bit PCM on the wire** (~1.5 Mbps/receiver) — half the old Float32
+  size and perceptually transparent (local `--party` playback stays full
+  Float32). A perceptual codec (Opus: ~20× smaller, with packet-loss
+  concealment) is reserved as a wire codec tag (`AudioCodec.opus`) for a
+  future WAN / very-bad-Wi-Fi tier; the negotiation seam is already in place.
 - ~~No encryption/auth~~ — **optional encryption shipped**: set a password
   (app: the password field; CLI: `--key <passphrase>` on both sides) and
   every packet is sealed with ChaCha20-Poly1305 (HKDF-derived key). Without

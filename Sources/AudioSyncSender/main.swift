@@ -134,25 +134,25 @@ do {
         port: options.port,
         serviceName: options.name,
         peerToPeer: options.peerToPeer,
-        passphrase: options.passphrase
+        passphrase: options.passphrase,
+        bufferDelayMs: options.bufferDelayMs
     )
     if options.passphrase != nil { log("stream encryption: ON (receivers need the same --key)") }
     server.start()
 
     switch options.mode {
     case .tone(let frequency):
-        let tone = ToneSource(server: server, frequency: frequency, bufferDelayMs: options.bufferDelayMs)
+        let tone = ToneSource(server: server, frequency: frequency)
         toneSource = tone
         tone.start()
 
     case .capture:
-        let bufferDelayNs = UInt64(options.bufferDelayMs) * 1_000_000
         let capture = SystemAudioCapture { samples, captureHostNs, sampleRate, channels in
-            // Capture PTS is on our (master) clock; receivers play each
-            // frame exactly bufferDelay after it was captured.
+            // Capture PTS is on our (master) clock; the server adds its
+            // adaptive buffer to schedule each frame's play time.
             server.sendAudio(
                 samples: samples,
-                firstFramePlayAtNs: captureHostNs + bufferDelayNs,
+                sourceClockNs: captureHostNs,
                 sampleRate: sampleRate,
                 channels: channels
             )
@@ -173,8 +173,6 @@ do {
             log("--party needs macOS 14.2+ (Core Audio process taps); use --capture instead")
             exit(1)
         }
-        let bufferDelayNs = UInt64(options.bufferDelayMs) * 1_000_000
-
         // Local synced playback: the sender's own speakers join the fleet,
         // playing the exact same delayed master timeline as every receiver.
         // The master clock is our own clock, so the conversion is identity.
@@ -196,7 +194,7 @@ do {
         let tap = ProcessTapCapture { samples, captureHostNs, sampleRate, channels in
             server.sendAudio(
                 samples: samples,
-                firstFramePlayAtNs: captureHostNs + bufferDelayNs,
+                sourceClockNs: captureHostNs,
                 sampleRate: sampleRate,
                 channels: channels
             )

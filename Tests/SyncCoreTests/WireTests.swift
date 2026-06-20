@@ -143,4 +143,45 @@ import Foundation
         let data = Wire.encode(.audio(chunk))
         #expect(data.count <= 1472, "audio datagram must fit in MTU minus IP+UDP headers")
     }
+
+    // MARK: - v2: feedback message + per-packet codec
+
+    @Test func feedbackRoundTrip() throws {
+        let message = Message.feedback(Feedback(
+            marginMinMs: -123, lateCount: 7, fillPermille: 994, bufferedMs: 210, rttMs: 3
+        ))
+        #expect(try Wire.decode(Wire.encode(message)) == message)
+    }
+
+    @Test func audioInt16RoundTripWithinOneLSB() throws {
+        var rng = SeededRandom(seed: 99)
+        let samples = (0..<320).map { _ in Float(rng.uniform(-1, 1)) }
+        let chunk = AudioChunk(sequence: 5, playAtMasterNs: 42, sampleRate: 48_000, channels: 2, samples: samples)
+        guard case .audio(let result) = try Wire.decode(Wire.encode(.audio(chunk), codec: .pcmInt16)) else {
+            Issue.record("expected audio"); return
+        }
+        #expect(result.sequence == chunk.sequence)
+        #expect(result.channels == chunk.channels)
+        for (a, b) in zip(result.samples, chunk.samples) {
+            #expect(abs(a - b) <= 1.0 / 32767.0 + 1e-7)
+        }
+    }
+
+    @Test func int16PacketIsHalfTheFloat32Body() {
+        let chunk = AudioChunk(sequence: 1, playAtMasterNs: 0, sampleRate: 48_000, channels: 2,
+                               samples: [Float](repeating: 0.3, count: 320))
+        let f32 = Wire.encode(.audio(chunk), codec: .pcmFloat32)
+        let i16 = Wire.encode(.audio(chunk), codec: .pcmInt16)
+        #expect(i16.count < f32.count)
+        #expect(f32.count - i16.count == 320 * 2) // 320 samples × (4−2) bytes saved
+    }
+
+    @Test func unknownCodecRejected() {
+        var w = BinaryWriter()
+        w.putBytes(Wire.magic); w.put(Wire.version); w.put(PacketType.audio.rawValue)
+        w.put(UInt32(1)); w.put(UInt64(0)); w.put(UInt32(48_000)); w.put(UInt16(1)); w.put(UInt32(1))
+        w.put(UInt8(200)) // unknown codec tag
+        w.put(UInt16(0))  // one sample's worth of bytes
+        #expect(throws: (any Error).self) { try Wire.decode(w.data) }
+    }
 }

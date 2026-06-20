@@ -39,6 +39,26 @@
             "target": "audiosync-recv",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release audiosync-recv"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MacAudioSync}",
+            "name": "Debug MacAudioSyncApp",
+            "target": "MacAudioSyncApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug MacAudioSyncApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MacAudioSync}",
+            "name": "Release MacAudioSyncApp",
+            "target": "MacAudioSyncApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release MacAudioSyncApp"
         }
     ]
 }

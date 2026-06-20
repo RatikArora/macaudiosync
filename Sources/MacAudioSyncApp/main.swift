@@ -25,12 +25,11 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // Subtle brand wash behind everything.
+            // Whisper of the system accent at the top — barely there, just
+            // enough to lift the window off flat. No gradient slab.
             LinearGradient(
-                colors: [Color(red: 0.32, green: 0.18, blue: 0.92).opacity(0.10),
-                         Color(red: 0.10, green: 0.52, blue: 1.00).opacity(0.04),
-                         Color.clear],
-                startPoint: .topLeading, endPoint: .bottom
+                colors: [Color.accentColor.opacity(0.05), Color.clear],
+                startPoint: .top, endPoint: .center
             )
             .ignoresSafeArea()
 
@@ -50,23 +49,86 @@ struct ContentView: View {
 
 // MARK: - App logo (mirrors the icon)
 
+/// The brand surface — graphite, matching the app icon. The ripple mark sits
+/// on it; interactive accents use the native system accent color, never a
+/// gradient.
+let brandInk = Color(red: 0.12, green: 0.12, blue: 0.135)
+
 struct AppLogo: View {
     var size: CGFloat = 76
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
-                .fill(LinearGradient(
-                    colors: [Color(red: 0.32, green: 0.18, blue: 0.92),
-                             Color(red: 0.10, green: 0.52, blue: 1.00)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                ))
+                .fill(brandInk)
                 .shadow(color: .black.opacity(0.25), radius: size * 0.10, y: size * 0.05)
-            Image(systemName: "speaker.wave.3.fill")
-                .font(.system(size: size * 0.42, weight: .medium))
-                .foregroundStyle(.white)
+            RipplesMark()
+                .frame(width: size * 0.66, height: size * 0.66)
         }
         .frame(width: size, height: size)
+    }
+}
+
+/// The signature mark: concentric sound ripples around a luminous core — one
+/// source, one sound, radiating in sync. Static (logo / icon); the receiver's
+/// searching state animates the same motif via `SearchingRipples`.
+struct RipplesMark: View {
+    var tint: Color = .white
+
+    var body: some View {
+        GeometryReader { geo in
+            let s = min(geo.size.width, geo.size.height)
+            ZStack {
+                ring(s: s, scale: 1.00, width: 0.017, opacity: 0.24)
+                ring(s: s, scale: 0.733, width: 0.028, opacity: 0.50)
+                ring(s: s, scale: 0.467, width: 0.043, opacity: 0.92)
+                Circle().fill(tint).frame(width: s * 0.192, height: s * 0.192)
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+        }
+    }
+
+    private func ring(s: CGFloat, scale: CGFloat, width: CGFloat, opacity: Double) -> some View {
+        Circle()
+            .stroke(tint.opacity(opacity), lineWidth: s * width)
+            .frame(width: s * scale, height: s * scale)
+    }
+}
+
+/// The receiver's "searching" animation: soft concentric ripples expanding and
+/// fading outward from a gently breathing core — the Synced-Ripples motif,
+/// alive. Apple-style "looking for devices". (To be fine-tuned against the
+/// referenced Organic Loaders design once the design project is imported.)
+struct SearchingRipples: View {
+    var size: CGFloat = 128
+    private let ripples = 3
+    private let period = 2.6
+    @State private var go = false
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<ripples, id: \.self) { i in
+                Circle()
+                    .strokeBorder(Color.accentColor, lineWidth: 2.5)
+                    .scaleEffect(go ? 1.0 : 0.18)
+                    .opacity(go ? 0.0 : 0.55)
+                    .animation(
+                        .easeOut(duration: period)
+                            .repeatForever(autoreverses: false)
+                            .delay(Double(i) * period / Double(ripples)),
+                        value: go
+                    )
+            }
+            Circle()
+                .fill(Color.accentColor)
+                .frame(width: size * 0.17, height: size * 0.17)
+                .scaleEffect(go ? 1.08 : 0.9)
+                .shadow(color: Color.accentColor.opacity(0.5), radius: go ? 12 : 4)
+                .animation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true), value: go)
+        }
+        .frame(width: size, height: size)
+        .onAppear { go = true }
+        .accessibilityLabel("Searching for a sender")
     }
 }
 
@@ -193,10 +255,7 @@ struct RoleCard: View {
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(hovering
-                          ? AnyShapeStyle(LinearGradient(
-                                colors: [Color(red: 0.32, green: 0.18, blue: 0.92),
-                                         Color(red: 0.10, green: 0.52, blue: 1.00)],
-                                startPoint: .topLeading, endPoint: .bottomTrailing))
+                          ? AnyShapeStyle(Color.accentColor)
                           : AnyShapeStyle(.quaternary.opacity(0.5)))
             )
             .foregroundStyle(hovering ? Color.white : Color.primary)
@@ -237,6 +296,29 @@ struct SenderView: View {
 
             if engine.isRunning {
                 FleetView(clients: engine.clients)
+            }
+
+            if engine.isRunning, let code = engine.joinCode {
+                SettingsCard {
+                    HStack(spacing: 8) {
+                        Image(systemName: "link")
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Join code").font(.caption).foregroundStyle(.secondary)
+                            Text(code).font(.body.monospaced()).textSelection(.enabled)
+                        }
+                        Spacer()
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(code, forType: .string)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Text("Only needed if a receiver can't find this Mac automatically — they paste this into Manual Connect.")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
             }
 
             SettingsCard {
@@ -308,11 +390,16 @@ struct ReceiverView: View {
     @Binding var role: Role
     @ObservedObject var engine: EngineProcess
     @AppStorage("streamKey") private var streamKey = ""
+    @AppStorage("manualAddress") private var manualAddress = ""
 
     private var isLoud: Bool { engine.peak > 0.95 }
 
     private var receiverArgs: [String] {
-        streamKey.isEmpty ? [] : ["--key", streamKey]
+        var args: [String] = []
+        let manual = manualAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !manual.isEmpty { args += ["--connect", manual] }
+        if !streamKey.isEmpty { args += ["--key", streamKey] }
+        return args
     }
 
     var body: some View {
@@ -336,16 +423,18 @@ struct ReceiverView: View {
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
+                    if let transport = engine.transport {
+                        Text("over \(transport)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 .padding(.vertical, 14)
                 .padding(.horizontal, 12)
                 .frame(maxWidth: .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(LinearGradient(
-                            colors: [Color(red: 0.32, green: 0.18, blue: 0.92).opacity(0.14),
-                                     Color(red: 0.10, green: 0.52, blue: 1.00).opacity(0.07)],
-                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .fill(Color.accentColor.opacity(0.08))
                 )
 
                 HStack(spacing: 10) {
@@ -362,13 +451,48 @@ struct ReceiverView: View {
                 }
             }
 
+            // Searching / connecting: the organic ripple loader takes the stage.
+            if engine.isRunning, engine.connectedTo == nil {
+                VStack(spacing: 16) {
+                    SearchingRipples()
+                    Text(engine.statusText.isEmpty ? "Looking for a sender…" : engine.statusText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+            }
+
             if !engine.isRunning || engine.connectedTo == nil {
-                HStack {
-                    Image(systemName: streamKey.isEmpty ? "lock.open" : "lock.fill")
-                        .foregroundStyle(streamKey.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.green))
-                    SecureField("Password (only if the sender set one)", text: $streamKey)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(engine.isRunning)
+                if let diagnosis = engine.diagnosis {
+                    Label(diagnosis, systemImage: "wifi.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                SettingsCard {
+                    HStack {
+                        Image(systemName: streamKey.isEmpty ? "lock.open" : "lock.fill")
+                            .foregroundStyle(streamKey.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.green))
+                        SecureField("Password (only if the sender set one)", text: $streamKey)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(engine.isRunning)
+                    }
+                    Divider()
+                    HStack {
+                        Image(systemName: "network")
+                            .foregroundStyle(.secondary)
+                        TextField("Manual connect — e.g. 192.168.0.107:57239", text: $manualAddress)
+                            .textFieldStyle(.roundedBorder)
+                            .disabled(engine.isRunning)
+                    }
+                    Text(manualAddress.trimmingCharacters(in: .whitespaces).isEmpty
+                         ? "Leave blank to find the sender automatically over Wi-Fi. If your network blocks discovery, paste the sender's join code here."
+                         : "Will connect directly to \(manualAddress.trimmingCharacters(in: .whitespaces)).")
+                        .font(.caption).foregroundStyle(.tertiary)
                 }
             }
 
@@ -435,8 +559,7 @@ struct WaveformView: View {
                 let amp = (0.03 + min(level * 1.15, 1.0) * 0.97) * (size.height * 0.42)
                 let colors: [Color] = loud
                     ? [.orange, .pink]
-                    : [Color(red: 0.45, green: 0.30, blue: 1.00),
-                       Color(red: 0.10, green: 0.60, blue: 1.00)]
+                    : [Color.accentColor, Color.accentColor.opacity(0.65)]
                 let gradient = GraphicsContext.Shading.linearGradient(
                     Gradient(colors: colors),
                     startPoint: .zero,

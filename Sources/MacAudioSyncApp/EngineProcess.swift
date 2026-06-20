@@ -22,6 +22,15 @@ final class EngineProcess: ObservableObject {
     @Published var rttUs: Int?
     /// Arrival headroom (ms): how early audio lands vs its deadline.
     @Published var marginMs: Int?
+    /// Sender: copyable IP:port a receiver can use when Bonjour discovery is
+    /// blocked (Manual Connect).
+    @Published var joinCode: String?
+    /// Receiver: which transport the live stream is using — "Wi-Fi router",
+    /// "peer-to-peer (AWDL)", "wired Ethernet".
+    @Published var transport: String?
+    /// Receiver: plain-language guidance when audio can't get through
+    /// (discovery blocked, or device-to-device traffic blocked).
+    @Published var diagnosis: String?
 
     private var recentOffsetsMs: [Double] = []
 
@@ -86,6 +95,9 @@ final class EngineProcess: ObservableObject {
         syncJitterUs = nil
         rttUs = nil
         marginMs = nil
+        joinCode = nil
+        transport = nil
+        diagnosis = nil
         recentOffsetsMs = []
         statusText = "Starting…"
 
@@ -171,15 +183,34 @@ final class EngineProcess: ObservableObject {
         if line.contains("browsing for senders") {
             statusText = "Searching for a sender…"
         }
-        if line.contains("connected to ") {
-            let raw = line.components(separatedBy: "connected to ").last ?? ""
-            connectedTo = raw
+        // Matches both "connected to X via Y" and "stream resumed —
+        // reconnected to X via Y"; the " via Y" suffix is stripped from the
+        // displayed name and captured separately as the transport. Guard
+        // against diagnosis lines, whose guidance text also contains the
+        // phrase "connected to the sender".
+        if !line.contains("diag="),
+           let target = capture(#"(?:re)?connected to (.+?)(?: via .+)?$"#, in: line) {
+            connectedTo = target
                 .replacingOccurrences(of: "\\032", with: " ")
                 .replacingOccurrences(of: "._audiosync._udp.local.", with: "")
             statusText = "Connected"
+            diagnosis = nil
+            errorText = nil
+        }
+        if let via = capture(#"\bvia ([A-Za-z0-9 ()-]+)$"#, in: line) {
+            transport = via
+        }
+        if let code = capture(#"join-code=(\S+)"#, in: line) {
+            joinCode = code
+        }
+        // Plain-language guidance lines: "diag=<kind> — <message>".
+        if line.contains("diag=") {
+            let parts = line.components(separatedBy: "— ")
+            diagnosis = parts.count > 1 ? parts.dropFirst().joined(separator: "— ") : line
         }
         if let fill = capture(#"\((\d+)% fill\)"#, in: line) {
             fillPercent = Int(fill)
+            if (Int(fill) ?? 0) > 0 { diagnosis = nil; errorText = nil }
         }
         if let p = capture(#"peak=([0-9.]+)"#, in: line) {
             peak = Double(p) ?? peak

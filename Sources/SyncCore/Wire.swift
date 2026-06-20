@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Layout (all integers little-endian):
 ///   magic   u32  "ASYN" (0x4E595341 as LE bytes 'A','S','Y','N')
-///   version u8   currently 1
+///   version u8   currently 2 (v2 added the audio codec byte + feedback msg)
 ///   type    u8   PacketType
 ///   payload      type-specific
 public enum Message: Equatable {
@@ -17,6 +17,8 @@ public enum Message: Equatable {
     case clockReply(clientSendNs: UInt64, serverRecvNs: UInt64, serverSendNs: UInt64)
     /// Server -> client audio chunk.
     case audio(AudioChunk)
+    /// Client -> server health report; drives the sender's adaptive buffer.
+    case feedback(Feedback)
 }
 
 public enum PacketType: UInt8 {
@@ -24,6 +26,7 @@ public enum PacketType: UInt8 {
     case clockRequest = 2
     case clockReply = 3
     case audio = 4
+    case feedback = 5
 }
 
 public enum WireError: Error, Equatable {
@@ -36,7 +39,7 @@ public enum WireError: Error, Equatable {
 
 public enum Wire {
     public static let magic: [UInt8] = [0x41, 0x53, 0x59, 0x4E] // "ASYN"
-    public static let version: UInt8 = 1
+    public static let version: UInt8 = 2
     /// Keep audio datagrams under a typical 1500-byte MTU to avoid IP
     /// fragmentation (one lost fragment would drop the whole packet).
     /// 160 frames * 2 ch * 4 bytes = 1280 bytes of payload.
@@ -44,7 +47,7 @@ public enum Wire {
 
     // MARK: - Encode
 
-    public static func encode(_ message: Message) -> Data {
+    public static func encode(_ message: Message, codec: AudioCodec = .pcmFloat32) -> Data {
         var w = BinaryWriter()
         w.putBytes(magic)
         w.put(version)
@@ -66,7 +69,15 @@ public enum Wire {
             w.put(UInt32(chunk.sampleRate.rounded()))
             w.put(UInt16(chunk.channels))
             w.put(UInt32(chunk.frameCount))
-            w.put(chunk.samples)
+            w.put(codec.rawValue)
+            codec.encodeSamples(chunk.samples, into: &w)
+        case .feedback(let fb):
+            w.put(PacketType.feedback.rawValue)
+            w.put(UInt32(bitPattern: fb.marginMinMs))
+            w.put(fb.lateCount)
+            w.put(fb.fillPermille)
+            w.put(fb.bufferedMs)
+            w.put(fb.rttMs)
         }
         return w.data
     }
@@ -102,13 +113,25 @@ public enum Wire {
             guard sampleRate > 0 else { throw WireError.badPayload("zero sample rate") }
             guard channels > 0 && channels <= 8 else { throw WireError.badPayload("bad channel count \(channels)") }
             guard frameCount <= 1 << 16 else { throw WireError.badPayload("absurd frame count \(frameCount)") }
-            let samples = try r.floats(count: Int(frameCount) * Int(channels))
+            let codecRaw = try r.u8()
+            guard let codec = AudioCodec(rawValue: codecRaw) else {
+                throw WireError.badPayload("unknown codec \(codecRaw)")
+            }
+            let samples = try codec.decodeSamples(&r, count: Int(frameCount) * Int(channels))
             return .audio(AudioChunk(
                 sequence: sequence,
                 playAtMasterNs: playAt,
                 sampleRate: Double(sampleRate),
                 channels: Int(channels),
                 samples: samples
+            ))
+        case .feedback:
+            return .feedback(Feedback(
+                marginMinMs: Int32(bitPattern: try r.u32()),
+                lateCount: try r.u32(),
+                fillPermille: try r.u32(),
+                bufferedMs: try r.u32(),
+                rttMs: try r.u32()
             ))
         }
     }

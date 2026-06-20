@@ -86,7 +86,6 @@ let options = parseReceiverOptions()
 var playback: SyncedPlayer?
 var headless: HeadlessRenderer?
 var statsTimer: DispatchSourceTimer?
-var browser: NWBrowser?
 var client: ReceiverClient!
 
 func startPipeline() {
@@ -114,6 +113,7 @@ func startPipeline() {
 func startStatsTimer() {
     let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
     timer.schedule(deadline: .now() + 1, repeating: 1)
+    var lastLateCount = 0
     timer.setEventHandler {
         let accumulator = options.headless ? headless!.stats : playback!.stats
         let (filled, silent, unsynced, peak) = accumulator.drain()
@@ -122,11 +122,11 @@ func startStatsTimer() {
         let driftPpm = client.drift.driftPpm.map { String(format: "%.1f", $0) } ?? "—"
         let bufferedMs = client.buffer.bufferedSpanNs / 1_000_000
         let total = max(1, filled + silent + unsynced)
-        // Minimum arrival margin this second = latency headroom. If it stays
-        // comfortably positive, the sender's --buffer-ms can come down by
-        // about that amount; near zero (or late>0) means buffer too small.
+        // Minimum arrival margin this second = latency headroom. Drain once
+        // and reuse for both the log line and the upstream feedback report.
+        let marginDrain = client.margin.drain()
         var marginText = "—"
-        if let m = client.margin.drain() {
+        if let m = marginDrain {
             marginText = String(format: "%.0f", Double(m.minNs) / 1e6)
             if m.minNs < 15_000_000 {
                 marginText += "ms (LOW — raise sender --buffer-ms)"
@@ -134,6 +134,27 @@ func startStatsTimer() {
                 marginText += "ms"
             }
         }
+
+        // Report health upstream so the sender can adapt its buffer to the
+        // worst-case receiver. Only while actively receiving (margin present),
+        // so a reconnecting receiver's gap doesn't mislead the controller.
+        if let m = marginDrain {
+            let lateNow = client.buffer.lateCount
+            let lateDelta = max(0, lateNow - lastLateCount)
+            lastLateCount = lateNow
+            // Fill for the controller counts only playable frames: `silent`
+            // is a real underrun, but `unsynced` is just clock warmup at
+            // startup — excluding it avoids a spurious buffer bump on connect.
+            let playable = max(1, filled + silent)
+            client.sendFeedback(Feedback(
+                marginMinMs: Int32(clamping: m.minNs / 1_000_000),
+                lateCount: UInt32(clamping: lateDelta),
+                fillPermille: UInt32(clamping: filled * 1000 / playable),
+                bufferedMs: UInt32(clamping: client.buffer.bufferedSpanNs / 1_000_000),
+                rttMs: UInt32(clamping: (client.sync.bestRttNs ?? 0) / 1_000_000)
+            ))
+        }
+
         log("sync offset=\(offsetMs)ms rtt=\(rttUs)µs drift=\(driftPpm)ppm | " +
             "buffered=\(bufferedMs)ms margin=\(marginText) filled=\(filled) silent=\(silent) unsynced=\(unsynced) " +
             "(\(filled * 100 / total)% fill) peak=\(String(format: "%.2f", peak)) | pkts=\(client.audioPacketsReceived) " +
@@ -152,33 +173,22 @@ func scheduleExitIfRequested() {
     }
 }
 
+// The client owns discovery and reconnection internally now: it keeps the
+// audio engine, jitter buffer and clock estimate alive for the whole
+// process and only rebuilds its connection (re-resolving the sender's port
+// over Bonjour) when the network changes. `startPipeline` runs once, on the
+// first successful connect.
 switch options.target {
 case .hostPort(let host, let port):
     client = ReceiverClient(host: host, port: port, peerToPeer: options.peerToPeer, passphrase: options.passphrase) {
         startPipeline()
     }
-    client.start()
-
 case .browse:
-    log("browsing for senders (_audiosync._udp)...")
-    let nwBrowser = NWBrowser(
-        for: .bonjour(type: "_audiosync._udp", domain: nil),
-        using: ReceiverClient.parameters(peerToPeer: options.peerToPeer)
-    )
-    browser = nwBrowser
-    var connected = false
-    nwBrowser.browseResultsChangedHandler = { results, _ in
-        guard !connected, let first = results.first else { return }
-        connected = true
-        log("found sender: \(first.endpoint)")
-        nwBrowser.cancel()
-        client = ReceiverClient(endpoint: first.endpoint, peerToPeer: options.peerToPeer, passphrase: options.passphrase) {
-            startPipeline()
-        }
-        client.start()
+    client = ReceiverClient(target: .browse(serviceName: nil), peerToPeer: options.peerToPeer, passphrase: options.passphrase) {
+        startPipeline()
     }
-    nwBrowser.start(queue: DispatchQueue(label: "audiosync.recv.browse"))
 }
+client.start()
 
 scheduleExitIfRequested()
 dispatchMain()

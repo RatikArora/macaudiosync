@@ -10,7 +10,6 @@ import SyncCore
 final class ToneSource {
     private let server: SenderServer
     private let generator: ToneGenerator
-    private let bufferDelayNs: UInt64
     private let sampleRate: Double
     private let channels: Int
     private let framesPerBlock: Int
@@ -19,12 +18,11 @@ final class ToneSource {
     private var timer: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "audiosync.sender.tone")
 
-    init(server: SenderServer, frequency: Double, sampleRate: Double = 48_000, channels: Int = 2, bufferDelayMs: Int) {
+    init(server: SenderServer, frequency: Double, sampleRate: Double = 48_000, channels: Int = 2) {
         self.server = server
         self.generator = ToneGenerator(frequency: frequency, sampleRate: sampleRate, amplitude: 0.2, channels: channels)
         self.sampleRate = sampleRate
         self.channels = channels
-        self.bufferDelayNs = UInt64(bufferDelayMs) * 1_000_000
         self.framesPerBlock = Int(sampleRate / 100) // 10 ms blocks
     }
 
@@ -35,7 +33,7 @@ final class ToneSource {
         timer.setEventHandler { [weak self] in self?.tick() }
         timer.resume()
         self.timer = timer
-        log("tone source started: \(generator.frequency) Hz, \(Int(sampleRate)) Hz \(channels)ch, buffer \(bufferDelayNs / 1_000_000) ms")
+        log("tone source started: \(generator.frequency) Hz, \(Int(sampleRate)) Hz \(channels)ch")
     }
 
     private func tick() {
@@ -46,10 +44,12 @@ final class ToneSource {
         let targetFrames = UInt64(Double(now - streamStartNs) * sampleRate / 1e9) + UInt64(framesPerBlock)
         while framesSent < targetFrames {
             let samples = generator.nextChunk(frameCount: framesPerBlock)
-            let playAt = streamStartNs + bufferDelayNs + UInt64(Double(framesSent) / sampleRate * 1e9)
+            // Master-clock time this block is "captured"; the server adds the
+            // adaptive buffer to get the play time.
+            let sourceClockNs = streamStartNs + UInt64(Double(framesSent) / sampleRate * 1e9)
             server.sendAudio(
                 samples: samples,
-                firstFramePlayAtNs: playAt,
+                sourceClockNs: sourceClockNs,
                 sampleRate: sampleRate,
                 channels: channels
             )
