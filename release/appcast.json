@@ -1,5 +1,5 @@
 {
-  "version": "2.0",
-  "notes": "Ripple redesign, a ratcheting latency buffer that climbs to a clean 100% fill and never drops back (no more breaks), and in-app updates.",
+  "version": "2.1",
+  "notes": "Click-free gap concealment (no more pops on a dropped packet), lighter Wi-Fi footprint (half the packet rate), a fixed rock-steady buffer, and a safer in-app updater.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip"
 }

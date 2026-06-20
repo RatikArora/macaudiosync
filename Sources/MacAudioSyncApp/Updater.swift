@@ -118,14 +118,27 @@ final class Updater: ObservableObject {
         let script = work.appendingPathComponent("install.sh")
         let body = """
         #!/bin/bash
+        exec >>/tmp/sonar-update.log 2>&1
         DEST="$1"; NEWAPP="$2"; PID="$3"; WORK="$4"
+        echo "[sonar-update] $(date): DEST=$DEST PID=$PID"
         # Wait (up to ~10s) for the running app to fully quit.
         for _ in $(seq 1 100); do kill -0 "$PID" 2>/dev/null || break; sleep 0.1; done
         sleep 0.3
-        rm -rf "$DEST"
-        /usr/bin/ditto "$NEWAPP" "$DEST"
-        /usr/bin/xattr -cr "$DEST" 2>/dev/null
-        open "$DEST"
+        # Stage the new app NEXT TO the old one first. Only delete the old one
+        # once the copy has clearly succeeded, then atomically rename. This way
+        # a failed copy can never leave the user with no app at all.
+        STAGING="${DEST}.update-staging"
+        rm -rf "$STAGING"
+        if /usr/bin/ditto "$NEWAPP" "$STAGING" && [ -d "$STAGING/Contents/MacOS" ]; then
+            rm -rf "$DEST"
+            /bin/mv "$STAGING" "$DEST"
+            /usr/bin/xattr -cr "$DEST" 2>/dev/null
+            echo "[sonar-update] swapped OK -> $DEST"
+        else
+            echo "[sonar-update] staging copy FAILED; leaving the installed app untouched"
+            rm -rf "$STAGING"
+        fi
+        /usr/bin/open "$DEST"
         rm -rf "$WORK"
         """
         try body.write(to: script, atomically: true, encoding: .utf8)
