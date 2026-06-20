@@ -245,15 +245,13 @@ struct UpdateBanner: View {
     }
 }
 
-/// Keeps the native macOS window buttons (close / minimize / zoom) visible in
-/// the top-left while we draw our own flat title bar beneath them, and lets the
-/// whole bar drag the window. The back arrow then reads as sitting right after
-/// the traffic lights — the standard Mac layout.
+/// HIDES the native window buttons and lets the bar drag the window. We draw
+/// our OWN traffic-light dots in the title bar (see `WindowDots`) so the whole
+/// bar is one SwiftUI surface with perfect alignment — no native chrome to
+/// stack a second strip or sit off-line.
 struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        // The window isn't attached yet in makeNSView; configure once it is,
-        // and retry a couple of runloop turns in case it attaches late.
         configure(from: view, attempt: 0)
         return view
     }
@@ -264,27 +262,55 @@ struct WindowConfigurator: NSViewRepresentable {
                 if attempt < 5 { configure(from: view, attempt: attempt + 1) }
                 return
             }
-            // Extend content under a transparent title bar, hide the text, but
-            // KEEP the standard close/minimize/zoom buttons in the top-left so
-            // the back arrow reads as sitting right after them.
             window.styleMask.insert(.fullSizeContentView)
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isMovableByWindowBackground = true
-            window.standardWindowButton(.closeButton)?.isHidden = false
-            window.standardWindowButton(.miniaturizeButton)?.isHidden = false
-            window.standardWindowButton(.zoomButton)?.isHidden = false
+            // Hide the native dots — we draw our own in the bar.
+            window.standardWindowButton(.closeButton)?.isHidden = true
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            window.standardWindowButton(.zoomButton)?.isHidden = true
         }
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
+/// Our own macOS-style traffic lights, drawn in the title bar so they line up
+/// with everything else. Red closes, yellow minimizes; the glyphs appear on
+/// hover, exactly like the system buttons.
+struct WindowDots: View {
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            dot(Color(hex: 0xFF5F57), glyph: "xmark") { NSApp.keyWindow?.performClose(nil) }
+            dot(Color(hex: 0xFEBC2E), glyph: "minus") { NSApp.keyWindow?.miniaturize(nil) }
+            dot(Color(hex: 0x28C840), glyph: "arrow.up.left.and.arrow.down.right") {}
+        }
+        .onHover { hovering = $0 }
+    }
+
+    private func dot(_ color: Color, glyph: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Circle().fill(color).frame(width: 12, height: 12)
+                .overlay(Circle().stroke(.black.opacity(0.12), lineWidth: 0.5))
+                .overlay(
+                    Image(systemName: glyph)
+                        .font(.system(size: 6.5, weight: .bold))
+                        .foregroundStyle(.black.opacity(hovering ? 0.55 : 0))
+                )
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+    }
+}
+
 // MARK: - Window chrome
 
-/// Custom 44px title bar matching the prototype: a centered ripple-mark +
-/// title, a back chevron when inside a role, and an info button. The real
-/// macOS traffic-light buttons float over the leading edge (hidden titlebar),
-/// so we inset to clear them rather than drawing fakes.
+/// Custom 44px title bar: our own traffic-light dots and a back chevron on the
+/// left, a centered ripple-mark + title, and an info button on the right — all
+/// one SwiftUI surface, so it's a single perfectly-aligned bar (no native
+/// chrome). Mirrors the prototype, which also drew its own dots.
 struct TitleBar: View {
     @Environment(\.theme) private var t
     let title: String
@@ -293,35 +319,28 @@ struct TitleBar: View {
     let onAbout: () -> Void
 
     var body: some View {
-        // Content is pinned to a 28pt row at the top so the back/info buttons
-        // line up vertically with the macOS traffic lights (which sit in the
-        // standard ~28pt titlebar), rather than floating low in a 44pt bar.
-        ZStack(alignment: .top) {
+        ZStack {
+            // Centered title.
             HStack(spacing: 7) {
                 RippleMark(size: 15)
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(t.text)
             }
-            .frame(height: 28)
 
-            HStack(spacing: 0) {
+            // Leading controls + trailing info, vertically centered in the bar.
+            HStack(spacing: 12) {
+                WindowDots()
                 if showBack {
-                    TitleBarButton(system: "chevron.left", action: onBack)
-                        .help("Back")
+                    TitleBarButton(system: "chevron.left", action: onBack).help("Back")
                 }
                 Spacer()
-                TitleBarButton(system: "info", action: onAbout)
-                    .help("About Sonar")
-                    .padding(.trailing, 6)
+                TitleBarButton(system: "info", action: onAbout).help("About Sonar")
             }
-            .frame(height: 28)
-            .padding(.leading, 78) // sit just after close / minimize / zoom
+            .padding(.horizontal, 14)
         }
         .frame(height: 44)
         .frame(maxWidth: .infinity)
-        // Blend into the window instead of a translucent material band — a
-        // clean unified title bar, with just a whisper of a hairline.
         .background(t.winBg)
         .overlay(alignment: .bottom) {
             Rectangle().fill(t.sep.opacity(0.6)).frame(height: 0.5)
@@ -882,8 +901,6 @@ struct ReceiverView: View {
         return .searching
     }
 
-    private var isLoud: Bool { engine.peak > 0.95 }
-
     private var receiverArgs: [String] {
         var args: [String] = []
         let manual = manualAddress.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1088,7 +1105,7 @@ struct ReceiverView: View {
                 }
                 Spacer()
             }
-            Waveform(bands: engine.spectrum, loud: isLoud)
+            Waveform(bands: engine.spectrum)
             if let jitter = engine.syncJitterUs {
                 (Text("Locked to the sender within ")
                  + Text("±\(jitter) µs").foregroundColor(t.text).bold()
@@ -1300,7 +1317,6 @@ struct Waveform: View {
     @Environment(\.theme) private var t
     @Environment(\.animationsActive) private var animate
     let bands: [Float]
-    let loud: Bool
     @State private var bars = SpectrumBars()
 
     var body: some View {
@@ -1317,8 +1333,8 @@ struct Waveform: View {
                 var x = (size.width - totalW) / 2
                 let midY = size.height / 2
 
-                let colors = loud ? [Color(hex: 0xFF9F0A), Color(hex: 0xFF4E8A)]
-                                  : [t.accentLite, t.accent, t.accentStrong]
+                // Always the sonar teal — consistent, no color-shifting.
+                let colors = [t.accentLite, t.accent, t.accentStrong]
                 let shading = GraphicsContext.Shading.linearGradient(
                     Gradient(colors: colors),
                     startPoint: CGPoint(x: 0, y: 0),

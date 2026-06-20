@@ -1,5 +1,5 @@
 {
-  "version": "2.7",
-  "notes": "Really one title bar now — the content slides under the traffic lights instead of leaving a reserved gap above it.",
+  "version": "2.8",
+  "notes": "One properly-aligned title bar (our own window dots, no native strip to misalign), and the visualizer stays one consistent color instead of shifting.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip"
 }
