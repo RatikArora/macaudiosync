@@ -32,17 +32,15 @@ final class SenderServer {
     private var lastStatsPacketsSent: UInt64 = 0
     private var statsTimer: DispatchSourceTimer?
 
-    // Adaptive buffer: the controller (net queue) sets `targetBufferNs` from
-    // worst-case receiver feedback; the send path (capture queue) slews
-    // `effectiveBufferNs` toward it a few µs per packet — below the receiver's
-    // 30 µs timestamp-jitter threshold — so adaptation is gap-free, tsJit-free
-    // and inaudible. `bufferLock` guards the cross-thread hand-off.
-    private let controller: AdaptiveController
-    private var adaptiveTimer: DispatchSourceTimer?
-    private let bufferLock = NSLock()
-    private var targetBufferNs: UInt64
-    private var effectiveBufferNs: UInt64
-    private static let maxBufferSlewNs: UInt64 = 25_000
+    /// Playback delay budget (latency), FIXED for the lifetime of the stream.
+    /// We deliberately never change it while streaming: any runtime change
+    /// shifts every subsequent packet's play time, and the receiver hears that
+    /// seam as a click or a burst of static as the timeline ramps. A constant
+    /// buffer is the only way to guarantee the stream never breaks from buffer
+    /// tuning. Set it once with --buffer-ms (raise it on a flaky network).
+    /// Receivers still report their health upstream — it shows in their own
+    /// stats — the sender just doesn't act on it anymore.
+    private let bufferDelayNs: UInt64
     /// Wire codec for outgoing audio: Int16 is half the bytes of Float32 and
     /// perceptually transparent. (Local --party playback still gets the full
     /// Float32 chunk via `localSink`.)
@@ -51,8 +49,6 @@ final class SenderServer {
     private struct ClientState {
         let connection: NWConnection
         var lastSeenNs: UInt64
-        var lastFeedback: Feedback?
-        var lastFeedbackNs: UInt64 = 0
     }
 
     /// Optional local consumer of every chunk (used by --party mode to feed
@@ -66,10 +62,8 @@ final class SenderServer {
     init(port: UInt16, serviceName: String, peerToPeer: Bool = true, passphrase: String? = nil, bufferDelayMs: Int = 150) throws {
         cipher = passphrase.flatMap { $0.isEmpty ? nil : StreamCipher(passphrase: $0) }
         self.serviceName = serviceName
-        self.controller = AdaptiveController(initialBufferMs: bufferDelayMs)
-        let initialBufferNs = UInt64(controller.bufferMs) * 1_000_000
-        self.targetBufferNs = initialBufferNs
-        self.effectiveBufferNs = initialBufferNs
+        let clampedMs = max(20, min(bufferDelayMs, 5000))
+        self.bufferDelayNs = UInt64(clampedMs) * 1_000_000
         // port == 0 → ask the OS for an ephemeral port (IANA dynamic range
         // 49152–65535). Corporate Wi-Fi controllers occasionally blocklist
         // specific known ports (we hit 7805 being filtered on one office
@@ -103,38 +97,6 @@ final class SenderServer {
         pathMonitor.start(queue: queue)
         listener?.start(queue: queue)
         startStatsTimer()
-        startAdaptiveTimer()
-    }
-
-    // MARK: - Adaptive buffer control
-
-    private func startAdaptiveTimer() {
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 1, repeating: 1)
-        timer.setEventHandler { [weak self] in self?.adaptTick() }
-        timer.resume()
-        adaptiveTimer = timer
-    }
-
-    private func adaptTick() {
-        let now = MonotonicClock.nowNs()
-        clientsLock.lock()
-        let recent = clients.values.compactMap { state -> Feedback? in
-            guard let fb = state.lastFeedback, now &- state.lastFeedbackNs < 3_000_000_000 else { return nil }
-            return fb
-        }
-        clientsLock.unlock()
-        guard !recent.isEmpty else { return } // nobody reporting → hold the buffer
-
-        bufferLock.lock(); let effectiveNs = effectiveBufferNs; bufferLock.unlock()
-        let effectiveMs = Int(effectiveNs / 1_000_000)
-        let input = ControllerInput.worstCase(recent)
-        let newBufferMs = controller.step(currentBufferMs: effectiveMs, input)
-        if newBufferMs != effectiveMs {
-            bufferLock.lock(); targetBufferNs = UInt64(newBufferMs) * 1_000_000; bufferLock.unlock()
-            log("adaptive buffer \(effectiveMs)→\(newBufferMs) ms " +
-                "(worst: margin=\(input.minMarginMs)ms late=\(input.lateOccurred) fill=\(input.minFillPermille)‰)")
-        }
     }
 
     // MARK: - Listener lifecycle
@@ -319,13 +281,11 @@ final class SenderServer {
                 serverSendNs: MonotonicClock.nowNs()
             ))
             connection.send(content: wrap(reply), completion: .contentProcessed { _ in })
-        case .feedback(let fb):
-            // Store the latest health report; the adaptive timer aggregates
-            // worst-case across receivers to tune the buffer.
-            clientsLock.lock()
-            clients[key]?.lastFeedback = fb
-            clients[key]?.lastFeedbackNs = receivedNs
-            clientsLock.unlock()
+        case .feedback:
+            // Receivers report health upstream; with a fixed buffer the sender
+            // doesn't act on it (kept on the wire for the receiver's own stats
+            // and possible future use).
+            break
         case .clockReply, .audio:
             break // not valid from a client; ignore
         }
@@ -343,18 +303,9 @@ final class SenderServer {
         var frameOffset = 0
         while frameOffset < totalFrames {
             let n = min(Wire.maxFramesPerPacket, totalFrames - frameOffset)
-            // Slew the effective buffer one notch toward the controller's
-            // target per packet, capped under the receiver's tsJit threshold
-            // so the change is gap-free and inaudible.
-            bufferLock.lock()
-            let target = targetBufferNs
-            if effectiveBufferNs < target {
-                effectiveBufferNs = min(target, effectiveBufferNs &+ Self.maxBufferSlewNs)
-            } else if effectiveBufferNs > target {
-                effectiveBufferNs = max(target, effectiveBufferNs &- Self.maxBufferSlewNs)
-            }
-            let bufferNs = effectiveBufferNs
-            bufferLock.unlock()
+            // Fixed buffer — never changed mid-stream, so packet play times
+            // advance exactly with the audio and there is no seam to click on.
+            let bufferNs = bufferDelayNs
 
             let slice = Array(samples[(frameOffset * channels)..<((frameOffset + n) * channels)])
             let playAt = sourceClockNs &+ bufferNs &+ UInt64(Double(frameOffset) / sampleRate * 1e9)

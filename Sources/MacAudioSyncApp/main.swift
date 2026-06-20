@@ -99,6 +99,7 @@ struct ContentView: View {
     @State private var role: Role = .none
     @State private var showAbout = false
     @StateObject private var engine = EngineProcess()
+    @StateObject private var updater = Updater()
 
     private var theme: Theme { Theme.resolve(scheme) }
 
@@ -116,10 +117,12 @@ struct ContentView: View {
                      onBack: { engine.stop(); role = .none },
                      onAbout: { showAbout = true })
 
+            UpdateBanner(updater: updater)
+
             ScrollView {
                 Group {
                     switch role {
-                    case .none: RolePickerView(role: $role)
+                    case .none: RolePickerView(role: $role, updater: updater)
                     case .sender: SenderView(role: $role, engine: engine)
                     case .receiver: ReceiverView(role: $role, engine: engine)
                     }
@@ -136,7 +139,57 @@ struct ContentView: View {
         .environment(\.theme, theme)
         .animation(.spring(response: 0.34, dampingFraction: 0.9), value: role)
         .sheet(isPresented: $showAbout) {
-            AboutSheet().environment(\.theme, theme)
+            AboutSheet(updater: updater).environment(\.theme, theme)
+        }
+        .onAppear { updater.check() }
+    }
+}
+
+/// A slim bar below the title bar that appears only when an update is in play —
+/// available, downloading, or installing — so the update control is right there
+/// in the app, not buried in a menu.
+struct UpdateBanner: View {
+    @Environment(\.theme) private var t
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        switch updater.status {
+        case .available(let version, _, let url):
+            bar {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(t.accentText)
+                Text("Sonar \(version) is available")
+                    .font(.system(size: 12.5, weight: .medium)).foregroundStyle(t.text)
+                Spacer()
+                Button { updater.downloadAndInstall(from: url) } label: {
+                    Text("Update")
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 12).frame(height: 26)
+                        .background(Capsule().fill(t.accent))
+                }
+                .buttonStyle(.plain)
+            }
+        case .downloading:
+            bar { progress("Downloading update…") }
+        case .installing:
+            bar { progress("Installing — Sonar will relaunch…") }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func bar<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 10) { content() }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(t.accent.opacity(0.12))
+            .overlay(alignment: .bottom) { Rectangle().fill(t.sep).frame(height: 0.5) }
+    }
+
+    private func progress(_ label: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(label).font(.system(size: 12.5)).foregroundStyle(t.text2)
+            Spacer()
         }
     }
 }
@@ -189,13 +242,17 @@ struct TitleBar: View {
     let onAbout: () -> Void
 
     var body: some View {
-        ZStack {
+        // Content is pinned to a 28pt row at the top so the back/info buttons
+        // line up vertically with the macOS traffic lights (which sit in the
+        // standard ~28pt titlebar), rather than floating low in a 44pt bar.
+        ZStack(alignment: .top) {
             HStack(spacing: 7) {
                 RippleMark(size: 15)
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(t.text)
             }
+            .frame(height: 28)
 
             HStack(spacing: 0) {
                 if showBack {
@@ -207,7 +264,8 @@ struct TitleBar: View {
                     .help("About Sonar")
                     .padding(.trailing, 6)
             }
-            .padding(.leading, 72) // clear the real traffic-light buttons
+            .frame(height: 28)
+            .padding(.leading, 78) // sit just after close / minimize / zoom
         }
         .frame(height: 44)
         .frame(maxWidth: .infinity)
@@ -234,6 +292,7 @@ struct TitleBarButton: View {
                     .fill(hover ? t.surface3 : .clear))
         }
         .buttonStyle(.plain)
+        .focusable(false) // no blue focus-ring outline around the icon
         .onHover { hover = $0 }
     }
 }
@@ -335,6 +394,7 @@ struct RippleLoader: View {
 struct RolePickerView: View {
     @Environment(\.theme) private var t
     @Binding var role: Role
+    @ObservedObject var updater: Updater
     @State private var taps = 0
     @State private var burstID = 0
     @State private var showBurst = false
@@ -373,10 +433,12 @@ struct RolePickerView: View {
                          filled: false) { role = .receiver }
             }
 
-            Spacer(minLength: 26)
+            Spacer(minLength: 22)
 
             HowToStrip()
-                .padding(.bottom, 4)
+
+            HomeUpdateRow(updater: updater)
+                .padding(.top, 14)
         }
         .frame(maxWidth: .infinity)
         .overlay { if showBurst { EmojiBurst().id(burstID).allowsHitTesting(false) } }
@@ -478,6 +540,38 @@ struct HowToStrip: View {
                 }
             }
         }
+    }
+}
+
+/// Small update affordance on Home: a one-tap check, with inline status. When
+/// a newer build is found the prominent banner under the title bar takes over.
+struct HomeUpdateRow: View {
+    @Environment(\.theme) private var t
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        switch updater.status {
+        case .idle, .checking:
+            label("Checking for updates…", color: t.text3)
+        case .upToDate:
+            HStack(spacing: 5) {
+                Image(systemName: "checkmark.circle.fill").imageScale(.small).foregroundStyle(t.good)
+                Text("Sonar \(Updater.currentVersion) — up to date")
+                    .font(.system(size: 11.5)).foregroundStyle(t.text3)
+                Button("Check again") { updater.check() }
+                    .font(.system(size: 11.5)).buttonStyle(.plain).foregroundStyle(t.accentText)
+            }
+        case .available, .downloading, .installing:
+            // The banner under the title bar is already showing the action.
+            label("Update ready — see the banner above", color: t.accentText)
+        case .error:
+            Button("Check for updates") { updater.check() }
+                .font(.system(size: 11.5)).buttonStyle(.plain).foregroundStyle(t.accentText)
+        }
+    }
+
+    private func label(_ text: String, color: Color) -> some View {
+        Text(text).font(.system(size: 11.5)).foregroundStyle(color)
     }
 }
 
@@ -1351,7 +1445,7 @@ func soundDistance(_ microseconds: Int) -> String {
 struct AboutSheet: View {
     @Environment(\.theme) private var t
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var updater = Updater()
+    @ObservedObject var updater: Updater
     @State private var versionTaps = 0
 
     var body: some View {

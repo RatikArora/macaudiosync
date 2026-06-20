@@ -58,13 +58,15 @@ needs right-click → Open (it's ad-hoc signed, no developer account).
   blocking device-to-device traffic / *client isolation* (*use a hotspot or a
   cable*) — instead of failing silently. The sender shows a copyable **join
   code** for the Manual Connect field.
-- **Self-tuning & lighter on the network.** Audio is sent as 16-bit PCM
-  (half the bandwidth of before, perceptually identical), and the sender
-  tunes its latency buffer as a one-way ratchet from each receiver's live
-  health — raising it the moment the network struggles and then holding,
-  so it climbs to the smallest buffer that plays cleanly and stays there.
-- **Updates itself.** Open the About sheet → it checks GitHub for a newer
-  build and installs it in place with one click; no re-download by hand.
+- **Lighter on the network, rock-steady buffer.** Audio is sent as 16-bit PCM
+  (half the bandwidth of before, perceptually identical). The latency buffer is
+  **fixed** for the whole stream — set once and never touched. (We tried tuning
+  it live; every change shifted packet play times and the receiver heard a
+  click/static at the seam, so the only guarantee against breakage is a constant
+  buffer. Raise `--buffer-ms` by hand on a flaky network.)
+- **Updates itself.** An update banner appears in-app when a newer build is on
+  GitHub — one click downloads it, swaps the app in place, and relaunches. (Also
+  in the About sheet.)
 - The app drives the same engines as the CLI below; permission prompts
   (System Audio Recording, Local Network) belong to the app itself.
 
@@ -225,20 +227,16 @@ effectiveness:
 1. **Wire the Macs**: Ethernet, or a USB-C/Thunderbolt cable between them
    (creates a direct network link). Buffer can then drop to 40–60 ms and
    dropouts disappear entirely.
-2. **Adaptive buffer** (automatic): the sender watches each receiver's live
-   margin/late/fill and raises its buffer the moment a receiver struggles,
-   then **holds** — it never eases back down, so the buffer ratchets up to the
-   smallest value that plays cleanly and stays there (lowering it is what used
-   to cause dropouts). The increase is slewed in a few µs per packet (below the
-   timestamp-jitter threshold), so even the rise is gap-free and inaudible. The
-   16-bit wire format (half the bytes) also reduces the congestion that causes
-   bursts in the first place.
+2. **Raise `--buffer-ms`**: the buffer is fixed, so on a bursty network set it
+   above your worst observed delay (e.g. 250–500). The 16-bit wire format (half
+   the bytes) also reduces the congestion that causes bursts in the first place.
+   (The buffer is deliberately *not* auto-tuned — changing it mid-stream shifts
+   packet play times and the receiver hears a click/static at the seam, so it's
+   set once and held.)
 3. **Built-in QoS + peer-to-peer** (on by default since v1.1): packets are
    marked voice-class (Wi-Fi WMM priority, exempt from power-save
    buffering) and the AWDL direct Mac-to-Mac link is enabled. If audio gets
    *worse* on your network, try `--no-p2p` on both sides.
-4. **Raise the starting `--buffer-ms`** if even the adaptive floor isn't
-   enough on a very bad network — set it above your worst observed burst.
 
 Two different "latencies" matter — don't confuse them:
 
@@ -291,10 +289,10 @@ Healthy output looks like `filled=48000 silent=0 ... (100% fill)` with
 - **No micro-resampler for DAC drift yet.** Each Mac's DAC crystal runs a
   few ppm off; alignment is recomputed every render window so drift cannot
   *accumulate*, but the correction still lands as a repeated/skipped frame at
-  a chunk boundary every few tens of seconds (in practice inaudible). The
-  adaptive *buffer* already uses a smooth sub-threshold slew (a step toward
-  smooth rate-matching); applying the same technique to DAC drift, driven by
-  `DriftEstimator`, is the next step.
+  a chunk boundary every few tens of seconds (in practice inaudible). A proper
+  micro-resampler driven by `DriftEstimator` would smooth this out — and is the
+  same artifact-free technique a future buffer-growth scheme would use (grow by
+  inserting/stretching samples, never by shifting packet timestamps).
 - **16-bit PCM on the wire** (~1.5 Mbps/receiver) — half the old Float32
   size and perceptually transparent (local `--party` playback stays full
   Float32). A perceptual codec (Opus: ~20× smaller, with packet-loss
