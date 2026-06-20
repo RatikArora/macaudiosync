@@ -15,33 +15,32 @@ import Testing
         #expect(c.step(currentBufferMs: 150, distress()) == 180)
     }
 
-    @Test func sustainedHealthLowersOnlyAfterStreak() {
+    @Test func healthyHoldsAndNeverLowers() {
+        // Ratchet: once raised, a healthy stream HOLDS the buffer forever —
+        // it must never be lowered (lowering is what broke audio).
         let c = AdaptiveController(initialBufferMs: 200)
         var b = 200
-        // Hysteresis: the first four healthy ticks must NOT lower the buffer.
-        for _ in 0..<4 { b = c.step(currentBufferMs: b, healthy()) }
+        for _ in 0..<50 { b = c.step(currentBufferMs: b, healthy()) }
         #expect(b == 200)
-        // The fifth healthy tick relaxes by one notch.
-        b = c.step(currentBufferMs: b, healthy())
-        #expect(b == 190)
     }
 
-    @Test func clampsToFloorAndCeiling() {
+    @Test func raisesToCeilingAndHolds() {
         let c = AdaptiveController(initialBufferMs: 100, floorMs: 40, ceilMs: 200)
         var b = 100
         for _ in 0..<50 { b = c.step(currentBufferMs: b, distress()) }
         #expect(b == 200) // never above ceiling
+        // Health returns: it stays at the level it climbed to — no easing down.
         for _ in 0..<300 { b = c.step(currentBufferMs: b, healthy()) }
-        #expect(b == 40)  // never below floor
+        #expect(b == 200)
     }
 
-    @Test func recoversAfterDistressClears() {
+    @Test func holdsAfterDistressClears() {
         let c = AdaptiveController(initialBufferMs: 100)
         let raised = c.step(currentBufferMs: 100, distress())
         #expect(raised == 130)
         var b = raised
-        for _ in 0..<5 { b = c.step(currentBufferMs: b, healthy()) }
-        #expect(b < raised)
+        for _ in 0..<10 { b = c.step(currentBufferMs: b, healthy()) }
+        #expect(b == raised) // settles at the optimum, never drops back
     }
 
     @Test func tightMarginNudgesUpGently() {

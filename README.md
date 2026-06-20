@@ -60,9 +60,11 @@ needs right-click → Open (it's ad-hoc signed, no developer account).
   code** for the Manual Connect field.
 - **Self-tuning & lighter on the network.** Audio is sent as 16-bit PCM
   (half the bandwidth of before, perceptually identical), and the sender
-  continuously tunes its latency buffer from each receiver's live health —
-  raising it when the network struggles, lowering it when it's clean — with
-  no audible change.
+  tunes its latency buffer as a one-way ratchet from each receiver's live
+  health — raising it the moment the network struggles and then holding,
+  so it climbs to the smallest buffer that plays cleanly and stays there.
+- **Updates itself.** Open the About sheet → it checks GitHub for a newer
+  build and installs it in place with one click; no re-download by hand.
 - The app drives the same engines as the CLI below; permission prompts
   (System Audio Recording, Local Network) belong to the app itself.
 
@@ -225,11 +227,12 @@ effectiveness:
    dropouts disappear entirely.
 2. **Adaptive buffer** (automatic): the sender watches each receiver's live
    margin/late/fill and raises its buffer the moment a receiver struggles,
-   then eases it back down when things are clean — so you don't have to hand-
-   tune `--buffer-ms` for a bursty network. The change is slewed in a few µs
-   per packet (below the timestamp-jitter threshold), so it's gap-free and
-   inaudible. The 16-bit wire format (half the bytes) also reduces the
-   congestion that causes bursts in the first place.
+   then **holds** — it never eases back down, so the buffer ratchets up to the
+   smallest value that plays cleanly and stays there (lowering it is what used
+   to cause dropouts). The increase is slewed in a few µs per packet (below the
+   timestamp-jitter threshold), so even the rise is gap-free and inaudible. The
+   16-bit wire format (half the bytes) also reduces the congestion that causes
+   bursts in the first place.
 3. **Built-in QoS + peer-to-peer** (on by default since v1.1): packets are
    marked voice-class (Wi-Fi WMM priority, exempt from power-save
    buffering) and the AWDL direct Mac-to-Mac link is enabled. If audio gets
@@ -254,7 +257,7 @@ Two different "latencies" matter — don't confuse them:
 76 tests cover the wire protocol (round-trips incl. the v2 codec byte and
 feedback message, truncation/garbage fuzzing, MTU bound), the audio codecs
 (Float32 bit-exact, Int16 within half an LSB and clamp-safe), the adaptive
-controller (raise-on-distress, hysteresis on relax, floor/ceiling clamps,
+controller (raise-on-distress, holds and never lowers, floor/ceiling clamps,
 worst-case aggregation), clock sync (convergence under 4 ms asymmetric
 jitter, 10-minute drift tracking, nonsense rejection), the jitter buffer
 (reordering, dedup, late-drop, concurrency), the timeline renderer

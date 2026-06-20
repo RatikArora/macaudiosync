@@ -53,32 +53,33 @@ public struct ControllerInput: Equatable {
 }
 
 /// Decides the playback buffer (latency) from live receiver feedback. It is
-/// deliberately conservative and one-dimensional: it only moves the buffer —
-/// a perceptually transparent knob — so adaptation NEVER changes audio
-/// quality. (Bitrate/codec adaptation is reserved for a future perceptual
-/// codec; PCM-Int16 is already at the transparent sweet spot.)
+/// deliberately one-dimensional: it only moves the buffer — a perceptually
+/// transparent knob — so adaptation NEVER changes audio quality.
+///
+/// It is a **ratchet**: it raises the buffer when a receiver is struggling and
+/// then HOLDS — it never lowers it again. The whole point is to climb to the
+/// smallest buffer that gives a clean 100%-fill, no-drop stream and then stay
+/// there. Lowering the buffer is what used to break audio: shrinking the
+/// deadline retroactively makes in-flight packets land "late", so every easing
+/// step risked a dropout. Removing the down-step removes those breaks entirely;
+/// the buffer simply settles at the optimum for the current network.
 ///
 /// Control law (one `step` per second):
 /// - DISTRESS (late, fill < 98.5%, or margin < 12 ms): raise the buffer fast.
 /// - TIGHT (margin < 30 ms): nudge the buffer up.
-/// - HEALTHY: lower the buffer one notch, but only after a sustained healthy
-///   streak — quick to protect, slow to relax, so it can't oscillate.
+/// - HEALTHY: hold — never drop.
 ///
-/// The sender applies the returned buffer by SLEWING toward it a few µs per
+/// The sender applies the returned buffer by SLEWING up toward it a few µs per
 /// packet (below the receiver's timestamp-jitter threshold), so even the
-/// transition is gap-free and inaudible.
+/// increase is gap-free and inaudible.
 public final class AdaptiveController {
     public let floorMs: Int
     public let ceilMs: Int
     public private(set) var bufferMs: Int
-    /// Consecutive healthy ticks; relaxation requires `relaxAfter` of them.
-    private var healthyStreak = 0
 
-    // Tunables (ms / ticks). Asymmetric on purpose.
+    // Tunables (ms). Raise-only.
     private let raiseDistressStep = 30
     private let raiseTightStep = 10
-    private let relaxStep = 10
-    private let relaxAfter = 5
     private let distressFillPermille = 985
     private let distressMarginMs = 12
     private let tightMarginMs = 30
@@ -95,7 +96,8 @@ public final class AdaptiveController {
     /// (the sender's slew-limited *effective* buffer). Stepping relative to it
     /// — rather than an internal accumulator — keeps the target from running
     /// away from the (deliberately slow) slew, so the feedback loop stays
-    /// closed on what listeners actually hear.
+    /// closed on what listeners actually hear. The result is never below
+    /// `currentBufferMs`: the buffer only ever ratchets up or holds.
     @discardableResult
     public func step(currentBufferMs: Int, _ input: ControllerInput) -> Int {
         var b = min(max(currentBufferMs, floorMs), ceilMs)
@@ -103,18 +105,11 @@ public final class AdaptiveController {
             || input.minFillPermille < distressFillPermille
             || input.minMarginMs < distressMarginMs
         if distress {
-            healthyStreak = 0
             b = min(ceilMs, b + raiseDistressStep)
         } else if input.minMarginMs < tightMarginMs {
-            healthyStreak = 0
             b = min(ceilMs, b + raiseTightStep)
-        } else {
-            healthyStreak += 1
-            if healthyStreak >= relaxAfter {
-                healthyStreak = 0
-                b = max(floorMs, b - relaxStep)
-            }
         }
+        // HEALTHY → hold. The buffer never decreases.
         bufferMs = b
         return b
     }

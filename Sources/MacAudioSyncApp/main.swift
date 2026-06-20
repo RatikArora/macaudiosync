@@ -15,7 +15,6 @@ struct MacAudioSyncRootApp: App {
             ContentView()
                 .frame(width: 480, height: 640)
         }
-        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
     }
 }
@@ -149,8 +148,22 @@ struct ContentView: View {
 struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
+        // The window isn't attached yet in makeNSView; configure once it is,
+        // and retry a couple of runloop turns in case it attaches late.
+        configure(from: view, attempt: 0)
+        return view
+    }
+
+    private func configure(from view: NSView, attempt: Int) {
         DispatchQueue.main.async {
-            guard let window = view.window else { return }
+            guard let window = view.window else {
+                if attempt < 5 { configure(from: view, attempt: attempt + 1) }
+                return
+            }
+            // Extend content under a transparent title bar, hide the text, but
+            // KEEP the standard close/minimize/zoom buttons in the top-left so
+            // the back arrow reads as sitting right after them.
+            window.styleMask.insert(.fullSizeContentView)
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isMovableByWindowBackground = true
@@ -158,7 +171,6 @@ struct WindowConfigurator: NSViewRepresentable {
             window.standardWindowButton(.miniaturizeButton)?.isHidden = false
             window.standardWindowButton(.zoomButton)?.isHidden = false
         }
-        return view
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
@@ -1339,6 +1351,7 @@ func soundDistance(_ microseconds: Int) -> String {
 struct AboutSheet: View {
     @Environment(\.theme) private var t
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var updater = Updater()
     @State private var versionTaps = 0
 
     var body: some View {
@@ -1346,7 +1359,8 @@ struct AboutSheet: View {
             RippleLoader(size: 96, duration: 6)
             Text("Sonar").font(.system(size: 20, weight: .semibold)).foregroundStyle(t.text)
                 .padding(.top, 6)
-            Text("Version 2.0 · Synced Ripples").font(.system(size: 12.5)).foregroundStyle(t.text2)
+            Text("Version \(Updater.currentVersion) · Synced Ripples")
+                .font(.system(size: 12.5)).foregroundStyle(t.text2)
                 .onTapGesture {
                     versionTaps += 1
                     if versionTaps == 3 { NSSound(named: "Glass")?.play() }
@@ -1364,21 +1378,82 @@ struct AboutSheet: View {
                     .transition(.scale.combined(with: .opacity))
             }
 
+            UpdateSection(updater: updater)
+                .padding(.top, 10)
+
             if let url = URL(string: "https://github.com/RatikArora/macaudiosync") {
                 Link(destination: url) {
                     Label("View on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
                         .font(.system(size: 12))
                 }
-                .padding(.top, 4)
+                .padding(.top, 2)
             }
 
             MasButton(title: "Close", style: .secondary, large: false) { dismiss() }
-                .padding(.top, 10)
+                .padding(.top, 8)
         }
         .animation(.spring(response: 0.4), value: versionTaps >= 3)
         .padding(24)
         .frame(width: 320)
         .background(t.winBg)
+    }
+}
+
+/// In-app update control inside the About sheet: auto-checks on open, then
+/// offers a one-click download + install when a newer build is published.
+struct UpdateSection: View {
+    @Environment(\.theme) private var t
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        VStack(spacing: 8) {
+            switch updater.status {
+            case .idle, .checking:
+                busy("Checking for updates…")
+            case .upToDate:
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(t.good)
+                    Text("You're on the latest version").foregroundStyle(t.text2)
+                }
+                .font(.system(size: 12.5))
+            case .available(let version, let notes, let url):
+                VStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.down.circle.fill").foregroundStyle(t.accentText)
+                        Text("Version \(version) is available").font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(t.text)
+                    }
+                    if !notes.isEmpty {
+                        Text(notes).font(.system(size: 12)).foregroundStyle(t.text2)
+                            .multilineTextAlignment(.center).lineSpacing(2)
+                    }
+                    MasButton(title: "Download & Install", systemImage: "square.and.arrow.down",
+                              style: .primary, large: false) {
+                        updater.downloadAndInstall(from: url)
+                    }
+                }
+            case .downloading:
+                busy("Downloading update…")
+            case .installing:
+                busy("Installing — Sonar will relaunch…")
+            case .error(let message):
+                VStack(spacing: 6) {
+                    Text(message).font(.system(size: 12)).foregroundStyle(t.warn)
+                        .multilineTextAlignment(.center)
+                    Button("Try again") { updater.check() }
+                        .font(.system(size: 12)).buttonStyle(.link)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .onAppear { if updater.status == .idle { updater.check() } }
+    }
+
+    private func busy(_ label: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(label).font(.system(size: 12.5)).foregroundStyle(t.text2)
+        }
     }
 }
 

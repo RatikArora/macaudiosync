@@ -149,12 +149,15 @@ You'll see `adaptive buffer A→B ms (worst: …)` on the sender when it moves.
 
 ### Latency tuning (sender's `--buffer-ms`, default 150 — now a STARTING value)
 
-End-to-end delay ≈ buffer-ms + ~25–40 ms fixed stack floor. **The sender now
-auto-tunes the buffer** from receiver feedback (raises on `late`/low-margin/
-low-fill, eases back down — by ≤10 ms/5 s — when sustained-healthy; floor 40,
-ceil 500; `AdaptiveController`). So `--buffer-ms` is the *starting* point;
-on a clean network it'll drift down toward the floor (lower latency), and on
-a bursty one it climbs on its own. To still tune by hand, watch `margin=`:
+End-to-end delay ≈ buffer-ms + ~25–40 ms fixed stack floor. **The sender
+auto-tunes the buffer as a one-way RATCHET** from receiver feedback: it raises
+on `late`/low-margin/low-fill and otherwise HOLDS — it never lowers the buffer
+again (floor = the starting `--buffer-ms`, ceil 500; `AdaptiveController`).
+Lowering is what used to break audio — shrinking the deadline retroactively
+makes in-flight packets land late, so every easing step risked a dropout. So
+`--buffer-ms` is the *starting* point; the buffer climbs to the smallest value
+that gives a clean 100%-fill, no-drop stream and stays there. To still tune by
+hand, watch `margin=`:
 manual floor is roughly `margin − 30 ms`. Wired LAN settles ~40–60. Good
 5 GHz Wi-Fi ~100–150. Congested Wi-Fi holds higher. Sub-10 ms is NOT
 achievable (capture blocks + DAC alone exceed it) — don't promise it;
