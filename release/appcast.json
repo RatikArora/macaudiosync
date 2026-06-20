@@ -1,5 +1,5 @@
 {
-  "version": "2.5",
-  "notes": "Survives sleep/wake without garbled audio (clock re-baselines instantly), and explains every failure plainly: wrong password, version mismatch, bad manual address, or a network that's blocking the audio — each with the fix. Plus background CPU throttling and a cleaner title bar.",
+  "version": "2.6",
+  "notes": "One clean title bar — the traffic-light buttons now sit in our bar instead of a stacked double bar.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip"
 }

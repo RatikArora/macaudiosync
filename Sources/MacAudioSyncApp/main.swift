@@ -15,6 +15,10 @@ struct MacAudioSyncRootApp: App {
             ContentView()
                 .frame(width: 480, height: 640)
         }
+        // Hidden title bar = content fills the whole window (no native title
+        // strip above ours) while the traffic-light buttons stay, floating over
+        // our bar — one clean unified title bar instead of a stacked double bar.
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
     }
 }
