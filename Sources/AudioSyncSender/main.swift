@@ -17,6 +17,7 @@ struct SenderOptions {
     var name = Host.current().localizedName ?? "MacAudioSync"
     var peerToPeer = true
     var localPlayback = true
+    var followSystemMute = true
     var passphrase: String? = nil
 
     enum Mode {
@@ -66,6 +67,7 @@ func parseSenderOptions() -> SenderOptions {
     let capture = takeFlag("--capture")
     let party = takeFlag("--party") || takeFlag("--capture-mute")
     if takeFlag("--no-local-play") { options.localPlayback = false }
+    if takeFlag("--no-follow-mute") { options.followSystemMute = false }
     if let i = args.firstIndex(of: "--tone") {
         args.remove(at: i)
         // Frequency value is optional: consume the next token only if it
@@ -109,6 +111,8 @@ options:
                        Watch "margin=" in the receiver's stats to tune:
                        healthy margin minus ~30ms is your safe buffer floor.
   --name <name>        Bonjour service name (default: computer name)
+  --no-follow-mute     don't mute receivers when this Mac is muted (default:
+                       muting your Mac mutes the whole room)
   --no-p2p             disable the peer-to-peer (AWDL) link; use only the
                        router. Try this if audio gets WORSE after enabling
                        Wi-Fi p2p (AWDL channel-hopping can hurt some setups)
@@ -135,7 +139,8 @@ do {
         serviceName: options.name,
         peerToPeer: options.peerToPeer,
         passphrase: options.passphrase,
-        bufferDelayMs: options.bufferDelayMs
+        bufferDelayMs: options.bufferDelayMs,
+        followSystemMute: options.followSystemMute
     )
     if options.passphrase != nil { log("stream encryption: ON (receivers need the same --key)") }
     server.start()

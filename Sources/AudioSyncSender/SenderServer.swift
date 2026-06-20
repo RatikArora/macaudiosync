@@ -59,7 +59,12 @@ final class SenderServer {
     /// is sealed/verified; unauthenticated peers are ignored entirely.
     private let cipher: StreamCipher?
 
-    init(port: UInt16, serviceName: String, peerToPeer: Bool = true, passphrase: String? = nil, bufferDelayMs: Int = 150) throws {
+    /// When set, mutes every receiver the moment the sender's own Mac is muted
+    /// (capture taps audio before the output volume, so we silence it here).
+    private let muteMonitor: SystemMuteMonitor?
+
+    init(port: UInt16, serviceName: String, peerToPeer: Bool = true, passphrase: String? = nil, bufferDelayMs: Int = 150, followSystemMute: Bool = true) throws {
+        self.muteMonitor = followSystemMute ? SystemMuteMonitor() : nil
         cipher = passphrase.flatMap { $0.isEmpty ? nil : StreamCipher(passphrase: $0) }
         self.serviceName = serviceName
         let clampedMs = max(20, min(bufferDelayMs, 5000))
@@ -97,6 +102,12 @@ final class SenderServer {
         pathMonitor.start(queue: queue)
         listener?.start(queue: queue)
         startStatsTimer()
+        muteMonitor?.onChange = { muted in
+            log(muted
+                ? "system muted — silencing all receivers"
+                : "system unmuted — audio resumed")
+        }
+        muteMonitor?.start(queue: queue)
     }
 
     // MARK: - Listener lifecycle
@@ -304,6 +315,10 @@ final class SenderServer {
         // datagrams — half the packets/s of the old fixed 160-frame chunk, far
         // gentler on shared Wi-Fi, same audio bitrate. Still under the MTU.
         let framesPerPacket = Wire.maxFramesPerPacket(for: codec, channels: channels)
+        // When the sender's Mac is muted, send silence (not nothing) — keeps the
+        // stream, clocks and connection alive so unmuting resumes instantly,
+        // while every receiver (and local party playback) goes quiet.
+        let muted = muteMonitor?.isMuted ?? false
         var frameOffset = 0
         while frameOffset < totalFrames {
             let n = min(framesPerPacket, totalFrames - frameOffset)
@@ -311,7 +326,9 @@ final class SenderServer {
             // advance exactly with the audio and there is no seam to click on.
             let bufferNs = bufferDelayNs
 
-            let slice = Array(samples[(frameOffset * channels)..<((frameOffset + n) * channels)])
+            let slice = muted
+                ? [Float](repeating: 0, count: n * channels)
+                : Array(samples[(frameOffset * channels)..<((frameOffset + n) * channels)])
             let playAt = sourceClockNs &+ bufferNs &+ UInt64(Double(frameOffset) / sampleRate * 1e9)
             sequence &+= 1
             let chunk = AudioChunk(

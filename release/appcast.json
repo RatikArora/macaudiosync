@@ -1,5 +1,5 @@
 {
-  "version": "2.9",
-  "notes": "Office networks that block Mac-to-Mac traffic: the receiver now automatically falls over to the direct AirDrop radio (AWDL) when normal Wi-Fi is isolated, so audio routes regardless of subnet or client isolation.",
+  "version": "3.0",
+  "notes": "Mute your Mac (F10) and the whole room goes silent — and resumes instantly when you unmute. Plus the office AWDL fallback, real spectrum visualizer, and click-free playback from earlier 2.x releases.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip"
 }

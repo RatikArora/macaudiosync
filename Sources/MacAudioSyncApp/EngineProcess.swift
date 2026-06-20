@@ -41,6 +41,8 @@ final class EngineProcess: ObservableObject {
     /// output, so the UI can guide the user to grant it instead of just
     /// showing a cryptic error.
     @Published var permissionIssue: PermissionIssue?
+    /// Sender: true while this Mac is muted, so the whole room is silenced.
+    @Published var muted = false
 
     enum PermissionIssue: Equatable {
         case systemAudio      // --party: System Audio Recording (process tap)
@@ -163,6 +165,7 @@ final class EngineProcess: ObservableObject {
         diagnosisKind = nil
         spectrum = []
         permissionIssue = nil
+        muted = false
         recentOffsetsMs = []
         statusText = "Starting…"
 
@@ -247,6 +250,8 @@ final class EngineProcess: ObservableObject {
         if line.contains("process-tap capture started") || line.contains("system audio capture started") {
             statusText = "Streaming"
         }
+        if line.contains("system muted") { muted = true }
+        if line.contains("system unmuted") { muted = false }
         if let count = capture(#"clients=(\d+)"#, in: line) {
             clients = Int(count) ?? clients
             if isRunning && statusText != "Streaming" { statusText = "Streaming" }

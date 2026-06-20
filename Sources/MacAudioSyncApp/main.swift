@@ -671,8 +671,9 @@ struct SenderView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Sender").font(.system(size: 20, weight: .semibold)).tracking(-0.4)
                         .foregroundStyle(t.text)
-                    StatusRow(state: engine.isRunning ? .live : .idle,
-                              label: engine.isRunning ? "Streaming" : "Not streaming")
+                    StatusRow(state: !engine.isRunning ? .idle : (engine.muted ? .warn : .live),
+                              label: !engine.isRunning ? "Not streaming"
+                                  : (engine.muted ? "Muted — room is silent" : "Streaming"))
                 }
                 Spacer()
                 if engine.isRunning, let code = engine.joinCode {

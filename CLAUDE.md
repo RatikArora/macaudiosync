@@ -96,8 +96,16 @@ Two capture modes — pick deliberately:
    un-mutes the system (tap dies with the process) — audio reverts to
    normal local playback, nothing is left broken.
 
+**Follow-system-mute (default ON).** `SystemMuteMonitor` polls the default
+output device; when the sender's Mac is muted (F10 / volume 0), `sendAudio`
+sends SILENCE (not nothing — keeps the stream/clocks alive) so the WHOLE ROOM
+goes quiet, and resumes instantly on unmute. Logs `system muted/unmuted`; the
+app reflects it ("Muted — room is silent"). Disable with `--no-follow-mute`.
+(Needed because capture taps audio *before* the output volume, so muting your
+own Mac otherwise wouldn't mute receivers.)
+
 Useful flags: `--tone [freq]` (test signal), `--no-local-play` (party
-without sender speakers), `--port <p>`, `--buffer-ms <ms>` (see tuning),
+without sender speakers), `--no-follow-mute`, `--port <p>`, `--buffer-ms <ms>` (see tuning),
 `--name <bonjour name>`, `--key <passphrase>` (encrypt/authenticate the
 stream — ChaCha20-Poly1305; receivers need the same `--key`; without it
 the wire is plaintext and anyone on the LAN can listen — recommend a key
