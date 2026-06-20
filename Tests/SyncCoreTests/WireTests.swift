@@ -144,6 +144,25 @@ import Foundation
         #expect(data.count <= 1472, "audio datagram must fit in MTU minus IP+UDP headers")
     }
 
+    @Test func codecAwareSizingPacksMoreYetStaysUnderMTU() {
+        // The wire codec (Int16) packs more frames per packet than Float32, so
+        // there are fewer packets/s (less Wi-Fi airtime) — but the largest
+        // resulting datagram, even with the encryption nonce+tag, still fits
+        // the MTU with no fragmentation.
+        let int16Frames = Wire.maxFramesPerPacket(for: .pcmInt16, channels: 2)
+        let floatFrames = Wire.maxFramesPerPacket(for: .pcmFloat32, channels: 2)
+        #expect(int16Frames > floatFrames, "Int16 should send fewer, fuller packets")
+
+        let chunk = AudioChunk(
+            sequence: 1, playAtMasterNs: 0, sampleRate: 48_000, channels: 2,
+            samples: [Float](repeating: 0.5, count: int16Frames * 2)
+        )
+        let data = Wire.encode(.audio(chunk), codec: .pcmInt16)
+        let cryptoOverhead = 28 // ChaCha20-Poly1305 nonce(12) + tag(16)
+        #expect(data.count + cryptoOverhead <= 1472,
+                "largest Int16 packet + encryption must still fit the MTU")
+    }
+
     // MARK: - v2: feedback message + per-packet codec
 
     @Test func feedbackRoundTrip() throws {

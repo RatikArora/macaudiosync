@@ -40,10 +40,27 @@ public enum WireError: Error, Equatable {
 public enum Wire {
     public static let magic: [UInt8] = [0x41, 0x53, 0x59, 0x4E] // "ASYN"
     public static let version: UInt8 = 2
-    /// Keep audio datagrams under a typical 1500-byte MTU to avoid IP
-    /// fragmentation (one lost fragment would drop the whole packet).
-    /// 160 frames * 2 ch * 4 bytes = 1280 bytes of payload.
+    /// Float32-safe default frame count (160 frames * 2 ch * 4 bytes = 1280 B
+    /// payload, under a 1500-byte MTU). Used by tests and as a fallback; the
+    /// sender sizes real packets with `maxFramesPerPacket(for:channels:)`, which
+    /// packs more frames when the codec is smaller.
     public static let maxFramesPerPacket = 160
+
+    /// Frames per audio packet that keep one datagram comfortably under a
+    /// 1500-byte MTU for this codec/channel layout — after our header and the
+    /// optional encryption nonce+tag — so there's never IP fragmentation.
+    ///
+    /// Bigger packets mean FEWER packets per second, and on Wi-Fi each packet
+    /// costs fixed airtime (preamble, contention, ACK) regardless of size, so
+    /// packet *count* is what loads the air, not bytes. The wire codec is Int16
+    /// (2 B/sample), so this yields ~320 frames/packet ≈ 150 packets/s/receiver
+    /// — half the rate (and half the airtime) of the old fixed 160 = 300/s —
+    /// for the same ~1.5 Mbps of actual audio. Light on shared Wi-Fi.
+    public static func maxFramesPerPacket(for codec: AudioCodec, channels: Int) -> Int {
+        let payloadBudget = 1300 // bytes for samples; + ~85 B header/crypto stays < 1400
+        let bytesPerFrame = max(1, channels) * max(1, codec.bytesPerSample)
+        return max(1, min(1 << 15, payloadBudget / bytesPerFrame))
+    }
 
     // MARK: - Encode
 

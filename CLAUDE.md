@@ -79,8 +79,11 @@ Two capture modes — pick deliberately:
      listener (re)bind, so after a network change read the newest one.
    - party: `local synced playback started` + `process-tap capture started
      (… original output MUTED)`; capture: `system audio capture started`
-   - `clients=N packets/s=~300×N` once receivers join (`clients=0
-     packets/s=0` just means nobody has connected yet — not an error).
+   - `clients=N packets/s=~150–200×N` once receivers join (`clients=0
+     packets/s=0` just means nobody has connected yet — not an error). The
+     Int16 wire codec packs ~320 frames/packet (`Wire.maxFramesPerPacket(for:
+     channels:)`), so the rate is ~half the old fixed 160-frame/300-pps — fewer
+     packets = less Wi-Fi airtime — for the same ~1.5 Mbps of audio per receiver.
    - on a Wi-Fi change: `network changed … — rebuilding listener` then a
      fresh `listening on …` + `join-code=` — the process does NOT restart
      (party-mode mute/tap stay up); `SenderServer.rebuildListener` re-binds

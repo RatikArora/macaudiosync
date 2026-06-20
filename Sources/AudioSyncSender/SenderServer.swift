@@ -300,9 +300,13 @@ final class SenderServer {
     /// --party sink always receives the full-quality Float32 chunk.
     func sendAudio(samples: [Float], sourceClockNs: UInt64, sampleRate: Double, channels: Int) {
         let totalFrames = samples.count / channels
+        // Size packets for the wire codec (Int16) so we send fewer, fuller
+        // datagrams — half the packets/s of the old fixed 160-frame chunk, far
+        // gentler on shared Wi-Fi, same audio bitrate. Still under the MTU.
+        let framesPerPacket = Wire.maxFramesPerPacket(for: codec, channels: channels)
         var frameOffset = 0
         while frameOffset < totalFrames {
-            let n = min(Wire.maxFramesPerPacket, totalFrames - frameOffset)
+            let n = min(framesPerPacket, totalFrames - frameOffset)
             // Fixed buffer — never changed mid-stream, so packet play times
             // advance exactly with the audio and there is no seam to click on.
             let bufferNs = bufferDelayNs

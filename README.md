@@ -295,9 +295,13 @@ Healthy output looks like `filled=48000 silent=0 ... (100% fill)` with
   inserting/stretching samples, never by shifting packet timestamps).
 - **16-bit PCM on the wire** (~1.5 Mbps/receiver) — half the old Float32
   size and perceptually transparent (local `--party` playback stays full
-  Float32). A perceptual codec (Opus: ~20× smaller, with packet-loss
-  concealment) is reserved as a wire codec tag (`AudioCodec.opus`) for a
-  future WAN / very-bad-Wi-Fi tier; the negotiation seam is already in place.
+  Float32). Packets are also sized for the codec (~320 frames each), so the
+  rate is ~150–200 packets/s/receiver rather than 300 — fewer packets means
+  less Wi-Fi airtime, which is what actually keeps a shared network happy
+  (each packet costs fixed airtime regardless of size). A perceptual codec
+  (Opus: ~20× smaller, with packet-loss concealment) is reserved as a wire
+  codec tag (`AudioCodec.opus`) for a future WAN / very-bad-Wi-Fi tier; the
+  negotiation seam is already in place.
 - ~~No encryption/auth~~ — **optional encryption shipped**: set a password
   (app: the password field; CLI: `--key <passphrase>` on both sides) and
   every packet is sealed with ChaCha20-Poly1305 (HKDF-derived key). Without
