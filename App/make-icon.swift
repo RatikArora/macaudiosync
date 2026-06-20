@@ -65,14 +65,16 @@ func renderMaster(_ canvas: Double) -> NSBitmapImageRep {
     // logo, ripple loader and searching animation exactly.
     let teal = NSColor(calibratedRed: 0.086, green: 0.714, blue: 0.659, alpha: 1.0)
 
-    // Soft teal glow behind the core.
-    let glowR = w * 0.28
-    if let glow = NSGradient(colors: [
-        teal.withAlphaComponent(0.28),
-        teal.withAlphaComponent(0.0),
-    ]) {
-        glow.draw(in: NSRect(x: cx - glowR, y: cy - glowR, width: glowR * 2, height: glowR * 2),
-                  relativeCenterPosition: NSPoint(x: 0, y: 0))
+    // Soft teal glow behind the core. Clipped to a circle AND faded to
+    // transparent well before the path edge, so it reads as a round halo —
+    // not a square (a radial gradient in a bare square rect leaves hard
+    // straight edges where it hasn't finished fading).
+    let glowR = w * 0.34
+    if let glow = NSGradient(colorsAndLocations:
+        (teal.withAlphaComponent(0.30), 0.0),
+        (teal.withAlphaComponent(0.0), 0.62)) {
+        let glowRect = NSRect(x: cx - glowR, y: cy - glowR, width: glowR * 2, height: glowR * 2)
+        glow.draw(in: NSBezierPath(ovalIn: glowRect), relativeCenterPosition: NSPoint(x: 0, y: 0))
     }
 
     // Concentric teal ripples — sonar ping, mid-flight.

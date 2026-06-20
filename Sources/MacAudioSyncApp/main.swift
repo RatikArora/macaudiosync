@@ -133,12 +133,34 @@ struct ContentView: View {
         }
         .frame(width: 480, height: 640)
         .background(theme.winBg)
+        .background(WindowConfigurator())
         .environment(\.theme, theme)
         .animation(.spring(response: 0.34, dampingFraction: 0.9), value: role)
         .sheet(isPresented: $showAbout) {
             AboutSheet().environment(\.theme, theme)
         }
     }
+}
+
+/// Keeps the native macOS window buttons (close / minimize / zoom) visible in
+/// the top-left while we draw our own flat title bar beneath them, and lets the
+/// whole bar drag the window. The back arrow then reads as sitting right after
+/// the traffic lights — the standard Mac layout.
+struct WindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = true
+            window.standardWindowButton(.closeButton)?.isHidden = false
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = false
+            window.standardWindowButton(.zoomButton)?.isHidden = false
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 // MARK: - Window chrome
