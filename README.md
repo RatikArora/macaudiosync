@@ -1,4 +1,4 @@
-# MacAudioSync
+# Sonar
 
 Play audio from one MacBook on **two or more MacBooks at the same time, in
 sync** — like AirPlay multi-room, but for *any* system audio (YouTube in a

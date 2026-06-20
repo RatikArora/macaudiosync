@@ -61,8 +61,9 @@ func renderMaster(_ canvas: Double) -> NSBitmapImageRep {
     let cy = square.midY
     let w = square.width
 
-    // Sonar teal — matches the in-app logo and searching animation exactly.
-    let teal = NSColor(calibratedRed: 0.00, green: 0.82, blue: 0.93, alpha: 1.0)
+    // Sonar teal — the muted teal-green accent (#16B6A8), matching the in-app
+    // logo, ripple loader and searching animation exactly.
+    let teal = NSColor(calibratedRed: 0.086, green: 0.714, blue: 0.659, alpha: 1.0)
 
     // Soft teal glow behind the core.
     let glowR = w * 0.28
