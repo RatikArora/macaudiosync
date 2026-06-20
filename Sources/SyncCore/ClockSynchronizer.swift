@@ -74,6 +74,18 @@ public final class ClockSynchronizer {
 
         let sample = Sample(clientNs: t4, offsetNs: offset, rttNs: rtt)
         lock.lock()
+        // Clock-step detection. CLOCK_UPTIME_RAW pauses while a Mac sleeps, so
+        // if either side sleeps mid-stream the master-minus-client offset jumps
+        // by the sleep duration — far beyond any network jitter. Averaging the
+        // old and new offsets across that discontinuity would garble audio for
+        // the whole window (~16 s at 4 probes/s). When a fresh sample lands a
+        // long way from the established offset, treat it as a step: drop the
+        // stale samples and re-baseline on the new clock (a brief, clean
+        // re-sync instead of seconds of wrong timing).
+        if let cached = cachedOffsetNs, abs(offset - cached) > Self.stepThresholdNs {
+            samples.removeAll(keepingCapacity: true)
+            cachedOffsetNs = nil
+        }
         samples.append(sample)
         if samples.count > windowSize {
             samples.removeFirst(samples.count - windowSize)
@@ -82,6 +94,10 @@ public final class ClockSynchronizer {
         lock.unlock()
         return sample
     }
+
+    /// An offset jump larger than this (200 ms) can't be network jitter — it's
+    /// a clock step (sleep/wake), so the sample window is flushed.
+    private static let stepThresholdNs: Int64 = 200_000_000
 
     /// Best current estimate of (master - client) in nanoseconds, or nil if
     /// not yet synchronized. Safe to call from the audio render thread.

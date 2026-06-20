@@ -96,6 +96,7 @@ final class ReceiverClient {
     /// sealed/verified, and plaintext or wrong-key streams are rejected.
     private let cipher: StreamCipher?
     private var warnedAboutKeyMismatch = false
+    private var warnedAboutVersionMismatch = false
 
     init(target: Target, peerToPeer: Bool = true, passphrase: String? = nil, onReady: @escaping () -> Void) {
         self.target = target
@@ -342,19 +343,26 @@ final class ReceiverClient {
                 self.reconnect(reason: "silent 3s")
             } else {
                 self.isolationStrikes += 1
-                if self.isolationStrikes >= 3 {
-                    // Persistent: retrying won't fix a network that blocks
-                    // device-to-device traffic. Point at the reliable fixes.
+                if case .endpoint(let ep) = self.target {
+                    // Manual address: UDP has no handshake, so "no reply" most
+                    // likely means the address is wrong or the sender isn't
+                    // there — not network isolation.
+                    log("diag=unreachable — reached \(ep) but got no audio back. Double-check " +
+                        "the address (the IP:port from the sender's join code), make sure the " +
+                        "sender is running, and that both Macs are on the same network. Retrying…")
+                } else if self.isolationStrikes >= 3 {
+                    // Browse + persistent: retrying won't fix a network that
+                    // blocks device-to-device traffic. Point at the sure fixes.
                     log("diag=isolated — this network keeps blocking the audio between " +
                         "your Macs (client isolation or port filtering) and can't carry the " +
                         "stream. Reliable fix: put BOTH Macs on a personal hotspot, or connect " +
                         "them with a USB-C / Thunderbolt cable — a direct link always works. " +
                         "Still retrying in the background…")
                 } else {
-                    log("diag=isolated — connected to the sender but no audio is " +
-                        "getting through. This network may block device-to-device " +
-                        "traffic (client isolation) or filter our port. Trying the direct " +
-                        "Mac-to-Mac radio… if it doesn't catch, use a hotspot or a cable.")
+                    log("diag=isolated — found the sender but no audio is getting through. " +
+                        "This network may block device-to-device traffic (client isolation) or " +
+                        "filter our port. Trying the direct Mac-to-Mac radio… if it doesn't " +
+                        "catch, use a hotspot or a cable.")
                 }
                 self.reconnect(reason: "no traffic (isolated/filtered)")
             }
@@ -419,6 +427,10 @@ final class ReceiverClient {
         let message: Message
         do {
             message = try Wire.decode(payload)
+        } catch WireError.unsupportedVersion(let v) {
+            decodeErrors &+= 1
+            warnVersionMismatch(v)
+            return
         } catch {
             decodeErrors &+= 1
             return
@@ -456,6 +468,16 @@ final class ReceiverClient {
     private func warnKeyMismatch(_ message: String) {
         guard !warnedAboutKeyMismatch else { return }
         warnedAboutKeyMismatch = true
-        log("ENCRYPTION MISMATCH: \(message)")
+        // diag= so the app surfaces it plainly (it was otherwise just a
+        // silent decodeErr count).
+        log("diag=key — \(message)")
+    }
+
+    private func warnVersionMismatch(_ wireVersion: UInt8) {
+        guard !warnedAboutVersionMismatch else { return }
+        warnedAboutVersionMismatch = true
+        log("diag=version — the sender is running a different Sonar version " +
+            "(wire v\(wireVersion); this build expects v\(Wire.version)). Update both " +
+            "Macs to the same version — open About → it'll offer the update.")
     }
 }

@@ -998,11 +998,8 @@ struct ReceiverView: View {
             case .playing:
                 playingHero
             case .error:
-                let isolated = engine.diagnosisKind == "isolated"
-                DiagnosisBanner(
-                    tone: isolated ? .bad : .warn,
-                    icon: isolated ? "wifi.exclamationmark" : "magnifyingglass",
-                    title: isolated ? "This network is blocking the audio" : "Couldn't find a sender",
+                let d = diagnosisPresentation
+                DiagnosisBanner(tone: d.tone, icon: d.icon, title: d.title,
                     text: engine.diagnosis ?? "This network may block device discovery. Try Manual Connect with a join code, or put both Macs on a personal hotspot.")
                 ManualConnectCard(open: .constant(true), address: $manualAddress,
                                   key: $streamKey, disabled: engine.isRunning,
@@ -1020,6 +1017,18 @@ struct ReceiverView: View {
             HelperText("Finds the sender automatically over Wi-Fi and reconnects by itself if anything drops. Allow \"local network\" access if macOS asks.")
 
             CollapsibleLogs(lines: engine.logLines)
+        }
+    }
+
+    /// Title/icon/tone for the error banner, keyed off the engine's diagnosis
+    /// kind so each failure reads accurately.
+    private var diagnosisPresentation: (title: String, icon: String, tone: DiagnosisBanner.Tone) {
+        switch engine.diagnosisKind {
+        case "isolated":    return ("This network is blocking the audio", "wifi.exclamationmark", .bad)
+        case "key":         return ("Password doesn't match the sender", "lock.trianglebadge.exclamationmark", .bad)
+        case "version":     return ("Update needed — different versions", "arrow.triangle.2.circlepath", .warn)
+        case "unreachable": return ("Couldn't reach that address", "network.slash", .bad)
+        default:            return ("Couldn't find a sender", "magnifyingglass", .warn)
         }
     }
 

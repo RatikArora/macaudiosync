@@ -101,6 +101,38 @@ import Foundation
         #expect(backToLocal == local)
     }
 
+    @Test func reBaselinesAfterAClockStepFromSleep() throws {
+        // Converge normally.
+        let sync = ClockSynchronizer(windowSize: 64, minSamplesToSync: 5)
+        var clocks = SimClocks()
+        for _ in 0..<12 {
+            clocks.runExchange(sync: sync, forwardDelayNs: 250_000, returnDelayNs: 250_000)
+            clocks.advance(ns: 250_000_000)
+        }
+        let before = try #require(sync.offsetNs)
+        #expect(abs(before - clocks.trueOffsetNs) < 5_000)
+
+        // The client Mac sleeps ~5 s: CLOCK_UPTIME_RAW pauses, so afterward the
+        // client clock reads 5 s behind and the master-minus-client offset
+        // jumps by ~5 s. Model it as a new clock baseline continuing at the
+        // current master time.
+        let sleepNs: UInt64 = 5_000_000_000
+        var stepped = SimClocks(masterEpochNs: clocks.masterEpochNs,
+                                clientEpochNs: clocks.clientEpochNs &- sleepNs)
+        stepped.masterNowNs = clocks.masterNowNs
+
+        for _ in 0..<6 {
+            stepped.runExchange(sync: sync, forwardDelayNs: 250_000, returnDelayNs: 250_000)
+            stepped.advance(ns: 250_000_000)
+        }
+        let after = try #require(sync.offsetNs)
+        // Must track the NEW clock, not the pre-sleep average of the window.
+        #expect(abs(after - stepped.trueOffsetNs) < 50_000,
+                "after a clock step the offset must re-baseline, not blend across the window")
+        #expect(abs(after - before) > Int64(sleepNs / 2),
+                "the estimate must actually jump by ~the sleep duration")
+    }
+
     @Test func windowSlidesAndForgetsOldSamples() {
         let sync = ClockSynchronizer(windowSize: 16, minSamplesToSync: 5)
         var clocks = SimClocks()

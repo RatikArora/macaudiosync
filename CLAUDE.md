@@ -207,7 +207,12 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
 |---|---|
 | `-3801` on sender | Screen Recording permission missing (see Sender §1) |
 | receiver logs `diag=no-mdns` / stuck `browsing for senders` | mDNS/Bonjour blocked → use the sender's `join-code=` with `--connect` (or the app's Manual Connect); check both Macs on same network + macOS Local Network permission |
-| receiver logs `diag=isolated` (connected, but no audio) | network blocks device-to-device traffic (client isolation) or filters our port → use a personal hotspot or a cable; or `--no-p2p` toggling. This is THE common corporate-Wi-Fi failure |
+| receiver logs `diag=isolated` (connected, but no audio) | network blocks device-to-device traffic (client isolation) or filters our port → use a personal hotspot or a cable; or `--no-p2p` toggling. This is THE common corporate-Wi-Fi failure. After 3 strikes the message escalates to "use a hotspot/cable" (app title: "This network is blocking the audio") |
+| receiver logs `diag=unreachable` | `--connect`/Manual Connect to a wrong or absent address (UDP has no handshake, so a bad address looks like silence) → check the IP:port and that the sender is running on the same network |
+| receiver logs `diag=key` | wrong `--key`/password (decode/seal failed) → set the SAME password on both. App title: "Password doesn't match the sender" |
+| receiver logs `diag=version` | the two Macs run different `Wire.version` → update both (the app offers it). App title: "Update needed — different versions" |
+| garbled audio for ~10–15 s after a Mac wakes from sleep | should NOT happen anymore — `ClockSynchronizer` detects the offset step (CLOCK_UPTIME_RAW pauses during sleep) and flushes its window to re-baseline instead of averaging across the discontinuity (`stepThresholdNs`) |
+| app pinning CPU while hidden | should NOT happen — `AppActivity` pauses the ripple/waveform/radar TimelineViews when no window is visible (occluded/miniaturized/hidden). Audio is unaffected (engine subprocess) |
 | `pkts=0` / `peak=0.00` but sync works | audio source died on sender (nothing playing) — check sender log |
 | `late` climbing / fill <100% | network can't keep up at this buffer — raise `--buffer-ms` (the buffer is fixed, it won't self-correct) or wire the Macs |
 | `decodeErr` nonzero | wire-version mismatch (must be v2 on BOTH → `git pull` + rebuild BOTH), OR wrong `--key`, OR unknown codec tag |
