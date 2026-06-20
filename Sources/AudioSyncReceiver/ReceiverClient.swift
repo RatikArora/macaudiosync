@@ -98,22 +98,38 @@ final class ReceiverClient {
     private var warnedAboutKeyMismatch = false
     private var warnedAboutVersionMismatch = false
 
-    init(target: Target, peerToPeer: Bool = true, passphrase: String? = nil, onReady: @escaping () -> Void) {
+    /// Force the connection onto the AWDL peer-to-peer radio by prohibiting the
+    /// infrastructure Wi-Fi interface. This is THE office fix: when the AP
+    /// blocks client-to-client traffic (isolation), the normal Wi-Fi path is
+    /// dead but UDP can't tell, so we explicitly take Wi-Fi away and the only
+    /// path left is the direct Mac-to-Mac AWDL link (what AirDrop uses), which
+    /// the AP can't block and which ignores the subnet entirely. Toggled on/off
+    /// across isolated reconnects so we try both transports until one delivers.
+    private var forcePeerToPeer: Bool
+    private let p2pOnly: Bool
+    /// Infrastructure Wi-Fi interfaces (en*, not awdl/llw) to prohibit when
+    /// forcing AWDL. Kept current from the path monitor.
+    private var infraInterfaces: [NWInterface] = []
+
+    init(target: Target, peerToPeer: Bool = true, passphrase: String? = nil, p2pOnly: Bool = false, onReady: @escaping () -> Void) {
         self.target = target
         self.peerToPeer = peerToPeer
+        self.p2pOnly = p2pOnly
+        self.forcePeerToPeer = p2pOnly
         self.cipher = passphrase.flatMap { $0.isEmpty ? nil : StreamCipher(passphrase: $0) }
         self.onReady = onReady
     }
 
-    convenience init(endpoint: NWEndpoint, peerToPeer: Bool = true, passphrase: String? = nil, onReady: @escaping () -> Void) {
-        self.init(target: .endpoint(endpoint), peerToPeer: peerToPeer, passphrase: passphrase, onReady: onReady)
+    convenience init(endpoint: NWEndpoint, peerToPeer: Bool = true, passphrase: String? = nil, p2pOnly: Bool = false, onReady: @escaping () -> Void) {
+        self.init(target: .endpoint(endpoint), peerToPeer: peerToPeer, passphrase: passphrase, p2pOnly: p2pOnly, onReady: onReady)
     }
 
-    convenience init(host: String, port: UInt16, peerToPeer: Bool = true, passphrase: String? = nil, onReady: @escaping () -> Void) {
+    convenience init(host: String, port: UInt16, peerToPeer: Bool = true, passphrase: String? = nil, p2pOnly: Bool = false, onReady: @escaping () -> Void) {
         self.init(
             target: .endpoint(.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!)),
             peerToPeer: peerToPeer,
             passphrase: passphrase,
+            p2pOnly: p2pOnly,
             onReady: onReady
         )
     }
@@ -142,7 +158,13 @@ final class ReceiverClient {
         dispatchPrecondition(condition: .onQueue(queue))
         generation &+= 1
         let gen = generation
-        let conn = NWConnection(to: endpoint, using: Self.parameters(peerToPeer: peerToPeer))
+        let params = Self.parameters(peerToPeer: peerToPeer)
+        if forcePeerToPeer && !infraInterfaces.isEmpty {
+            // Take the (isolated) infrastructure Wi-Fi away → only AWDL is left.
+            params.prohibitedInterfaces = infraInterfaces
+            log("forcing direct peer-to-peer (AWDL) — prohibiting \(infraInterfaces.map(\.name).joined(separator: ", "))")
+        }
+        let conn = NWConnection(to: endpoint, using: params)
         connection = conn
         conn.stateUpdateHandler = { [weak self] state in
             guard let self, gen == self.generation else { return }
@@ -164,7 +186,8 @@ final class ReceiverClient {
     private func onConnected(_ conn: NWConnection, gen: UInt64) {
         let first = !hasBecomeReadyOnce
         hasBecomeReadyOnce = true
-        let via = pathTypeDescription(conn.currentPath)
+        // When we forced AWDL we know the path; otherwise read it from the OS.
+        let via = forcePeerToPeer ? "peer-to-peer (AWDL)" : pathTypeDescription(conn.currentPath)
         log(first
             ? "connected to \(conn.endpoint)\(cipher != nil ? " (encrypted)" : "") via \(via)"
             : "stream resumed — reconnected to \(conn.endpoint) via \(via)")
@@ -262,6 +285,12 @@ final class ReceiverClient {
 
     private func handlePathUpdate(_ path: NWPath) {
         dispatchPrecondition(condition: .onQueue(queue))
+        // Keep the list of infrastructure Wi-Fi interfaces current (en*, NOT
+        // awdl/llw) so the AWDL-forcing path can prohibit exactly them. Done
+        // before the dedupe guard so it's set even on the first path callback.
+        infraInterfaces = path.availableInterfaces.filter {
+            $0.type == .wifi && !$0.name.hasPrefix("awdl") && !$0.name.hasPrefix("llw")
+        }
         let descriptor = pathDescriptor(path)
         let previous = lastPathDescriptor
         lastPathDescriptor = descriptor
@@ -361,8 +390,13 @@ final class ReceiverClient {
                 } else {
                     log("diag=isolated — found the sender but no audio is getting through. " +
                         "This network may block device-to-device traffic (client isolation) or " +
-                        "filter our port. Trying the direct Mac-to-Mac radio… if it doesn't " +
-                        "catch, use a hotspot or a cable.")
+                        "filter our port. Trying the direct Mac-to-Mac radio (AWDL)…")
+                }
+                // Alternate transports each isolated round so we try BOTH the
+                // normal Wi-Fi path and the forced AWDL path until one carries
+                // audio. (`--p2p-only` pins it to AWDL.)
+                if !self.p2pOnly && !self.infraInterfaces.isEmpty {
+                    self.forcePeerToPeer.toggle()
                 }
                 self.reconnect(reason: "no traffic (isolated/filtered)")
             }

@@ -1,5 +1,5 @@
 {
-  "version": "2.8",
-  "notes": "One properly-aligned title bar (our own window dots, no native strip to misalign), and the visualizer stays one consistent color instead of shifting.",
+  "version": "2.9",
+  "notes": "Office networks that block Mac-to-Mac traffic: the receiver now automatically falls over to the direct AirDrop radio (AWDL) when normal Wi-Fi is isolated, so audio routes regardless of subnet or client isolation.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip"
 }

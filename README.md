@@ -176,6 +176,8 @@ audiosync-recv:
                        app uses this to offer a picker when several are found
   --connect host:port  connect to a specific sender (use the sender's join code)
   --no-p2p             disable the AWDL peer-to-peer link (router only)
+  --p2p-only           force the direct Mac-to-Mac AWDL radio (prohibit Wi-Fi
+                       infrastructure) — for networks that isolate clients
   --key <passphrase>   decrypt an encrypted stream (must match the sender)
   --headless           full pipeline, no speakers; prints fill stats (testing)
   --exit-after <s>     quit after N seconds (testing)

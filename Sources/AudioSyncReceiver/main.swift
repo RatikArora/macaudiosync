@@ -12,6 +12,7 @@ struct ReceiverOptions {
     var headless = false
     var exitAfterSeconds: Int? = nil
     var peerToPeer = true
+    var peerToPeerOnly = false
     var passphrase: String? = nil
     /// Browse mode: connect only to the sender with this exact Bonjour name
     /// (from `--list-senders`). nil = first one found.
@@ -62,6 +63,7 @@ func parseReceiverOptions() -> ReceiverOptions {
     if let v = takeValue("--list-seconds") { options.listSeconds = Double(v) ?? 2.5 }
     options.headless = takeFlag("--headless")
     if takeFlag("--no-p2p") { options.peerToPeer = false }
+    if takeFlag("--p2p-only") { options.peerToPeerOnly = true }
     if let k = takeValue("--key") { options.passphrase = k }
     if let e = takeValue("--exit-after") {
         guard let s = Int(e), s > 0 else { fail("invalid --exit-after \(e)") }
@@ -86,6 +88,9 @@ options:
   --exit-after <secs>    exit automatically after N seconds (for testing)
   --no-p2p               disable the peer-to-peer (AWDL) link; use only the
                          router (try if audio gets worse with p2p enabled)
+  --p2p-only             force the direct Mac-to-Mac AWDL radio (prohibit
+                         infrastructure Wi-Fi) — for networks that isolate
+                         clients; verify with `sudo tcpdump -i awdl0 udp`
   --key <passphrase>     decrypt an encrypted stream (must match the
                          sender's --key)
 """
@@ -238,11 +243,11 @@ func scheduleExitIfRequested() {
 // first successful connect.
 switch options.target {
 case .hostPort(let host, let port):
-    client = ReceiverClient(host: host, port: port, peerToPeer: options.peerToPeer, passphrase: options.passphrase) {
+    client = ReceiverClient(host: host, port: port, peerToPeer: options.peerToPeer, passphrase: options.passphrase, p2pOnly: options.peerToPeerOnly) {
         startPipeline()
     }
 case .browse:
-    client = ReceiverClient(target: .browse(serviceName: options.senderName), peerToPeer: options.peerToPeer, passphrase: options.passphrase) {
+    client = ReceiverClient(target: .browse(serviceName: options.senderName), peerToPeer: options.peerToPeer, passphrase: options.passphrase, p2pOnly: options.peerToPeerOnly) {
         startPipeline()
     }
 }
