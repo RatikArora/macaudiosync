@@ -1,5 +1,5 @@
 {
-  "version": "2.6",
-  "notes": "One clean title bar — the traffic-light buttons now sit in our bar instead of a stacked double bar.",
+  "version": "2.7",
+  "notes": "Really one title bar now — the content slides under the traffic lights instead of leaving a reserved gap above it.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip"
 }

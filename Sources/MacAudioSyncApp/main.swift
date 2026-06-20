@@ -179,6 +179,10 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        // Slide our title bar UP under the traffic lights instead of leaving
+        // SwiftUI's reserved titlebar safe-area gap above it (that gap was the
+        // "second bar"). With hidden-title-bar + this, it's one unified bar.
+        .ignoresSafeArea(.all, edges: .top)
         .frame(width: 480, height: 640)
         .background(theme.winBg)
         .background(WindowConfigurator())
