@@ -80,6 +80,47 @@ extension EnvironmentValues {
     }
 }
 
+/// True while the app's window is actually on screen. The 60fps visualizer /
+/// radar / ripple animations read this and pause when the window is hidden,
+/// minimized, or fully occluded — so a backgrounded Sonar costs ~no CPU while
+/// the audio engine keeps streaming.
+private struct AnimationsActiveKey: EnvironmentKey { static let defaultValue = true }
+extension EnvironmentValues {
+    var animationsActive: Bool {
+        get { self[AnimationsActiveKey.self] }
+        set { self[AnimationsActiveKey.self] = newValue }
+    }
+}
+
+/// Tracks whether any Sonar window is visible to the user (occlusion +
+/// miniaturization), so we can pause non-essential animation work when it's
+/// not. Audio is unaffected — that runs in the engine subprocess.
+final class AppActivity: ObservableObject {
+    @Published var windowVisible = true
+
+    init() {
+        let nc = NotificationCenter.default
+        for name: NSNotification.Name in [
+            NSWindow.didChangeOcclusionStateNotification,
+            NSWindow.didMiniaturizeNotification,
+            NSWindow.didDeminiaturizeNotification,
+            NSApplication.didHideNotification,
+            NSApplication.didUnhideNotification,
+        ] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.recompute()
+            }
+        }
+    }
+
+    private func recompute() {
+        let visible = !NSApp.isHidden && NSApp.windows.contains { win in
+            win.isVisible && !win.isMiniaturized && win.occlusionState.contains(.visible)
+        }
+        if visible != windowVisible { windowVisible = visible }
+    }
+}
+
 extension Color {
     init(hex: UInt, alpha: Double = 1) {
         self.init(
@@ -100,6 +141,7 @@ struct ContentView: View {
     @State private var showAbout = false
     @StateObject private var engine = EngineProcess()
     @StateObject private var updater = Updater()
+    @StateObject private var activity = AppActivity()
 
     private var theme: Theme { Theme.resolve(scheme) }
 
@@ -137,6 +179,7 @@ struct ContentView: View {
         .background(theme.winBg)
         .background(WindowConfigurator())
         .environment(\.theme, theme)
+        .environment(\.animationsActive, activity.windowVisible)
         .animation(.spring(response: 0.34, dampingFraction: 0.9), value: role)
         .sheet(isPresented: $showAbout) {
             AboutSheet(updater: updater).environment(\.theme, theme)
@@ -269,9 +312,11 @@ struct TitleBar: View {
         }
         .frame(height: 44)
         .frame(maxWidth: .infinity)
-        .background(.regularMaterial)
+        // Blend into the window instead of a translucent material band — a
+        // clean unified title bar, with just a whisper of a hairline.
+        .background(t.winBg)
         .overlay(alignment: .bottom) {
-            Rectangle().fill(t.sep).frame(height: 0.5)
+            Rectangle().fill(t.sep.opacity(0.6)).frame(height: 0.5)
         }
     }
 }
@@ -330,13 +375,14 @@ struct RippleMark: View {
 /// so the waves stay perfectly staggered and smooth at 60fps.
 struct RippleLoader: View {
     @Environment(\.theme) private var t
+    @Environment(\.animationsActive) private var animate
     var size: CGFloat = 168
     var duration: Double = 5
 
     private let waveCount = 4
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !animate)) { timeline in
             let now = timeline.date.timeIntervalSinceReferenceDate
             ZStack {
                 // Soft glow behind the core (own slow pulse, 5.5s).
@@ -736,10 +782,11 @@ struct FleetCard: View {
 /// 60fps; positions are stable per receiver so blips don't jump around.
 struct SonarRadar: View {
     @Environment(\.theme) private var t
+    @Environment(\.animationsActive) private var animate
     let clients: Int
 
     var body: some View {
-        TimelineView(.animation) { tl in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !animate)) { tl in
             let now = tl.date.timeIntervalSinceReferenceDate
             Canvas { ctx, size in
                 let r = min(size.width, size.height) / 2 - 4
@@ -951,9 +998,11 @@ struct ReceiverView: View {
             case .playing:
                 playingHero
             case .error:
+                let isolated = engine.diagnosisKind == "isolated"
                 DiagnosisBanner(
-                    tone: .warn, icon: "magnifyingglass",
-                    title: "Couldn't find a sender",
+                    tone: isolated ? .bad : .warn,
+                    icon: isolated ? "wifi.exclamationmark" : "magnifyingglass",
+                    title: isolated ? "This network is blocking the audio" : "Couldn't find a sender",
                     text: engine.diagnosis ?? "This network may block device discovery. Try Manual Connect with a join code, or put both Macs on a personal hotspot.")
                 ManualConnectCard(open: .constant(true), address: $manualAddress,
                                   key: $streamKey, disabled: engine.isRunning,
@@ -1232,12 +1281,13 @@ final class SpectrumBars {
 /// right. Falls back to a flat idle line when nothing is playing.
 struct Waveform: View {
     @Environment(\.theme) private var t
+    @Environment(\.animationsActive) private var animate
     let bands: [Float]
     let loud: Bool
     @State private var bars = SpectrumBars()
 
     var body: some View {
-        TimelineView(.animation) { _ in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !animate)) { _ in
             Canvas { ctx, size in
                 bars.advance(target: bands, fallbackCount: 32)
                 let vals = bars.values

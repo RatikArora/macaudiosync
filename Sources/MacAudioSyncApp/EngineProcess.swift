@@ -31,6 +31,9 @@ final class EngineProcess: ObservableObject {
     /// Receiver: plain-language guidance when audio can't get through
     /// (discovery blocked, or device-to-device traffic blocked).
     @Published var diagnosis: String?
+    /// Receiver: the kind of the latest `diag=` line (e.g. "no-mdns",
+    /// "isolated"), so the UI can pick an accurate title.
+    @Published var diagnosisKind: String?
     /// Receiver: live frequency-spectrum band magnitudes (0...1) of the audio
     /// actually playing, emitted ~24×/s by the engine for the visualizer.
     @Published var spectrum: [Float] = []
@@ -157,6 +160,7 @@ final class EngineProcess: ObservableObject {
         joinCode = nil
         transport = nil
         diagnosis = nil
+        diagnosisKind = nil
         spectrum = []
         permissionIssue = nil
         recentOffsetsMs = []
@@ -263,7 +267,7 @@ final class EngineProcess: ObservableObject {
                 .replacingOccurrences(of: "\\032", with: " ")
                 .replacingOccurrences(of: "._audiosync._udp.local.", with: "")
             statusText = "Connected"
-            diagnosis = nil
+            diagnosis = nil; diagnosisKind = nil
             errorText = nil
         }
         if let via = capture(#"\bvia ([A-Za-z0-9 ()-]+)$"#, in: line) {
@@ -272,14 +276,17 @@ final class EngineProcess: ObservableObject {
         if let code = capture(#"join-code=(\S+)"#, in: line) {
             joinCode = code
         }
-        // Plain-language guidance lines: "diag=<kind> — <message>".
-        if line.contains("diag=") {
+        // Plain-language guidance lines: "diag=<kind> — <message>". Capture the
+        // kind so the UI can title it correctly ("couldn't find" vs "found it,
+        // but the network is blocking it").
+        if let kind = capture(#"diag=(\S+)"#, in: line) {
+            diagnosisKind = kind
             let parts = line.components(separatedBy: "— ")
             diagnosis = parts.count > 1 ? parts.dropFirst().joined(separator: "— ") : line
         }
         if let fill = capture(#"\((\d+)% fill\)"#, in: line) {
             fillPercent = Int(fill)
-            if (Int(fill) ?? 0) > 0 { diagnosis = nil; errorText = nil }
+            if (Int(fill) ?? 0) > 0 { diagnosis = nil; diagnosisKind = nil; errorText = nil }
         }
         if let p = capture(#"peak=([0-9.]+)"#, in: line) {
             peak = Double(p) ?? peak

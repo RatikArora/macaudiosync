@@ -1,5 +1,5 @@
 {
-  "version": "2.3",
-  "notes": "Pick which Mac to listen to when several are streaming, name your Mac, guided permission fixes, and a live sonar scope on the sender. Plus the real FFT visualizer, click-free gap concealment, a lighter Wi-Fi footprint, and a rock-steady buffer.",
+  "version": "2.4",
+  "notes": "Pauses its animations when the window isn't on screen (near-zero CPU in the background while audio keeps playing), clearer guidance when a network is blocking the audio, and a cleaner title bar.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip"
 }

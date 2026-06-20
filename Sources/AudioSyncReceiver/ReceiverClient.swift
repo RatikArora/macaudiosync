@@ -65,6 +65,11 @@ final class ReceiverClient {
     /// distinguishes "this network is filtering/isolating us" (connected but
     /// never heard back) from "the sender went away" (heard, then silence).
     private var gotTrafficThisConnection = false
+    /// Consecutive isolated reconnects (found the sender, no traffic). After a
+    /// few, the guidance escalates from "retrying" to "this network can't carry
+    /// it — use a hotspot or cable", since no amount of retrying will fix a
+    /// network that blocks device-to-device traffic. Reset when traffic flows.
+    private var isolationStrikes = 0
 
     // Diagnostics
     private(set) var audioPacketsReceived: UInt64 = 0
@@ -336,10 +341,21 @@ final class ReceiverClient {
                 log("sender stream silent for 3s — reconnecting…")
                 self.reconnect(reason: "silent 3s")
             } else {
-                log("diag=isolated — connected to the sender but no audio is " +
-                    "getting through. This network is blocking device-to-device " +
-                    "traffic (client isolation) or filtering our port. Use a " +
-                    "personal hotspot, a cable, or turn off client isolation. Retrying…")
+                self.isolationStrikes += 1
+                if self.isolationStrikes >= 3 {
+                    // Persistent: retrying won't fix a network that blocks
+                    // device-to-device traffic. Point at the reliable fixes.
+                    log("diag=isolated — this network keeps blocking the audio between " +
+                        "your Macs (client isolation or port filtering) and can't carry the " +
+                        "stream. Reliable fix: put BOTH Macs on a personal hotspot, or connect " +
+                        "them with a USB-C / Thunderbolt cable — a direct link always works. " +
+                        "Still retrying in the background…")
+                } else {
+                    log("diag=isolated — connected to the sender but no audio is " +
+                        "getting through. This network may block device-to-device " +
+                        "traffic (client isolation) or filter our port. Trying the direct " +
+                        "Mac-to-Mac radio… if it doesn't catch, use a hotspot or a cable.")
+                }
                 self.reconnect(reason: "no traffic (isolated/filtered)")
             }
         }
@@ -411,6 +427,7 @@ final class ReceiverClient {
         // Any well-formed packet from the sender proves the path works.
         lastTrafficNs = receivedNs
         gotTrafficThisConnection = true
+        isolationStrikes = 0
 
         switch message {
         case .clockReply(let t1, let t2, let t3):
