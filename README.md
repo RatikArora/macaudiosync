@@ -48,6 +48,15 @@ needs right-click → Open (it's ad-hoc signed, no developer account).
 
 - Sender uses party mode automatically (zero perceived latency); Macs older
   than 14.2 fall back to capture mode.
+- **Pick your sender.** If more than one Mac is broadcasting, the receiver
+  lists them by name and lets you choose; one sender just connects. Name your
+  Mac in the sender's "Broadcast name" field.
+- **Guided permissions.** If a capture permission is missing, the app says
+  exactly which one and gives a button straight to the right System Settings
+  pane, then a Try Again — instead of a cryptic failure.
+- **A real sonar scope.** The sender shows each connected Mac as a live blip on
+  a radar sweep, and the receiver's visualizer is a true FFT spectrum of the
+  audio playing (not a canned animation).
 - **Survives network changes.** Switch Wi-Fi, move to a phone hotspot, or
   roam between APs and the audio keeps going — both sides watch the network
   path and re-establish the stream underneath the still-running speakers
@@ -161,6 +170,10 @@ audiosync-send:
 
 audiosync-recv:
   --browse             auto-discover via Bonjour (default)
+  --sender <name>      with --browse, connect only to the sender with this
+                       exact Bonjour name (from --list-senders)
+  --list-senders       print discovered senders (sender=<name>) and exit; the
+                       app uses this to offer a picker when several are found
   --connect host:port  connect to a specific sender (use the sender's join code)
   --no-p2p             disable the AWDL peer-to-peer link (router only)
   --key <passphrase>   decrypt an encrypted stream (must match the sender)

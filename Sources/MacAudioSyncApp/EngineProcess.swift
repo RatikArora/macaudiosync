@@ -34,6 +34,15 @@ final class EngineProcess: ObservableObject {
     /// Receiver: live frequency-spectrum band magnitudes (0...1) of the audio
     /// actually playing, emitted ~24×/s by the engine for the visualizer.
     @Published var spectrum: [Float] = []
+    /// Sender: a missing macOS permission detected from the engine's failure
+    /// output, so the UI can guide the user to grant it instead of just
+    /// showing a cryptic error.
+    @Published var permissionIssue: PermissionIssue?
+
+    enum PermissionIssue: Equatable {
+        case systemAudio      // --party: System Audio Recording (process tap)
+        case screenRecording  // --capture: Screen Recording (ScreenCaptureKit)
+    }
 
     private var recentOffsetsMs: [Double] = []
 
@@ -84,6 +93,53 @@ final class EngineProcess: ObservableObject {
         launch()
     }
 
+    /// Relaunch with the same engine + arguments as last time (used by the
+    /// "Try Again" button after the user grants a permission).
+    func restart() {
+        guard !lastEngine.isEmpty else { return }
+        start(engine: lastEngine, arguments: lastArguments)
+    }
+
+    /// Run a short, separate discovery pass (`audiosync-recv --list-senders`)
+    /// and report the friendly Bonjour names found, so the UI can offer a
+    /// picker when more than one sender is on the network. Does not touch the
+    /// main engine process.
+    func discoverSenders(timeout: Double = 3.5, completion: @escaping ([String]) -> Void) {
+        guard let url = Self.engineURL("audiosync-recv") else { completion([]); return }
+        let proc = Process()
+        proc.executableURL = url
+        proc.arguments = ["--list-senders"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        var found: [String] = []
+        var buffer = ""
+        var finished = false
+        func finish() {
+            if finished { return }
+            finished = true
+            pipe.fileHandleForReading.readabilityHandler = nil
+            if proc.isRunning { proc.terminate() }
+            DispatchQueue.main.async { completion(found) }
+        }
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            guard let text = String(data: handle.availableData, encoding: .utf8) else { return }
+            buffer += text
+            while let nl = buffer.firstIndex(of: "\n") {
+                let line = String(buffer[..<nl])
+                buffer = String(buffer[buffer.index(after: nl)...])
+                if line.hasPrefix("sender=") {
+                    let name = String(line.dropFirst(7))
+                    if !name.isEmpty && !found.contains(name) { found.append(name) }
+                } else if line.contains("sender-list-done") {
+                    finish()
+                }
+            }
+        }
+        do { try proc.run() } catch { completion([]); return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish() }
+    }
+
     private func launch() {
         let engine = lastEngine
         guard let url = Self.engineURL(engine) else {
@@ -102,6 +158,7 @@ final class EngineProcess: ObservableObject {
         transport = nil
         diagnosis = nil
         spectrum = []
+        permissionIssue = nil
         recentOffsetsMs = []
         statusText = "Starting…"
 
@@ -242,6 +299,14 @@ final class EngineProcess: ObservableObject {
                let lo = recentOffsetsMs.min(), let hi = recentOffsetsMs.max() {
                 syncJitterUs = max(1, Int(((hi - lo) / 2 * 1000).rounded()))
             }
+        }
+
+        // Permission failures — detect the specific missing TCC grant so the
+        // UI can guide the user straight to the right System Settings pane.
+        if line.contains("AudioHardwareCreateProcessTap failed") {
+            permissionIssue = .systemAudio
+        } else if line.contains("-3801") || line.contains("SCStreamErrorDomain") {
+            permissionIssue = .screenRecording
         }
 
         // Failures worth surfacing prominently

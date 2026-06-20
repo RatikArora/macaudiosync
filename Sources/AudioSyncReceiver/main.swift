@@ -13,6 +13,11 @@ struct ReceiverOptions {
     var exitAfterSeconds: Int? = nil
     var peerToPeer = true
     var passphrase: String? = nil
+    /// Browse mode: connect only to the sender with this exact Bonjour name
+    /// (from `--list-senders`). nil = first one found.
+    var senderName: String? = nil
+    /// Discovery-only mode: list senders for N seconds, then exit.
+    var listSeconds: Double? = nil
 
     enum Target {
         case browse
@@ -52,6 +57,9 @@ func parseReceiverOptions() -> ReceiverOptions {
         options.target = .hostPort(host: String(parts[0]), port: port)
     }
     if takeFlag("--browse") { options.target = .browse }
+    if let s = takeValue("--sender") { options.senderName = s }
+    if takeFlag("--list-senders") { options.listSeconds = 2.5 }
+    if let v = takeValue("--list-seconds") { options.listSeconds = Double(v) ?? 2.5 }
     options.headless = takeFlag("--headless")
     if takeFlag("--no-p2p") { options.peerToPeer = false }
     if let k = takeValue("--key") { options.passphrase = k }
@@ -69,6 +77,10 @@ usage: audiosync-recv [options]
 options:
   --connect <host:port>  connect to a specific sender (e.g. macbook.local:7805)
   --browse               discover the first sender via Bonjour (default)
+  --sender <name>        with --browse, connect only to the sender with this
+                         exact Bonjour name (from --list-senders)
+  --list-senders         list discovered senders (sender=<name> lines) and exit
+  --list-seconds <secs>  how long to browse in --list-senders mode (default 2.5)
   --headless             run the full pipeline but don't open the speakers
                          (for testing); prints fill statistics
   --exit-after <secs>    exit automatically after N seconds (for testing)
@@ -79,6 +91,29 @@ options:
 """
 
 let options = parseReceiverOptions()
+
+// Discovery-only mode: browse Bonjour for a couple of seconds, print each
+// sender's friendly name as `sender=<name>`, then exit. The app uses this to
+// offer a picker when more than one sender is on the network.
+var discoveryBrowser: NWBrowser?
+if let seconds = options.listSeconds {
+    let browser = NWBrowser(for: .bonjour(type: "_audiosync._udp", domain: nil), using: .udp)
+    discoveryBrowser = browser
+    var seen = Set<String>()
+    browser.browseResultsChangedHandler = { results, _ in
+        for result in results {
+            if case let .service(name, _, _, _) = result.endpoint, seen.insert(name).inserted {
+                FileHandle.standardError.write(Data("sender=\(name)\n".utf8))
+            }
+        }
+    }
+    browser.start(queue: .main)
+    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+        FileHandle.standardError.write(Data("sender-list-done\n".utf8))
+        exit(0)
+    }
+    dispatchMain()
+}
 
 // Top-level globals: these must outlive the setup code below. (A `let`
 // inside a switch-case block is released when the block ends, which would
@@ -207,7 +242,7 @@ case .hostPort(let host, let port):
         startPipeline()
     }
 case .browse:
-    client = ReceiverClient(target: .browse(serviceName: nil), peerToPeer: options.peerToPeer, passphrase: options.passphrase) {
+    client = ReceiverClient(target: .browse(serviceName: options.senderName), peerToPeer: options.peerToPeer, passphrase: options.passphrase) {
         startPipeline()
     }
 }

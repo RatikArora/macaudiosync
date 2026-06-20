@@ -1,5 +1,5 @@
 {
-  "version": "2.2",
-  "notes": "Real spectrum visualizer (an actual FFT of the audio playing, not an animation), click-free gap concealment, a lighter Wi-Fi footprint, a fixed rock-steady buffer, and a safer in-app updater.",
+  "version": "2.3",
+  "notes": "Pick which Mac to listen to when several are streaming, name your Mac, guided permission fixes, and a live sonar scope on the sender. Plus the real FFT visualizer, click-free gap concealment, a lighter Wi-Fi footprint, and a rock-steady buffer.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip"
 }

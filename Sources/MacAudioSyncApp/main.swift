@@ -585,6 +585,7 @@ struct SenderView: View {
     @AppStorage("playLocally") private var playLocally = true
     @AppStorage("encryptOn") private var encryptOn = false
     @AppStorage("streamKey") private var streamKey = ""
+    @AppStorage("senderName") private var senderDisplayName = ""
 
     private var supportsParty: Bool {
         ProcessInfo.processInfo.isOperatingSystemAtLeast(
@@ -618,6 +619,22 @@ struct SenderView: View {
             VStack(alignment: .leading, spacing: 0) {
                 SectionLabel("Output")
                 VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "tag.fill").font(.system(size: 13)).foregroundStyle(t.text2)
+                            .frame(width: 30, height: 30)
+                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(t.surface3))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Broadcast name").font(.system(size: 14, weight: .medium)).foregroundStyle(t.text)
+                            Text("How this Mac appears to receivers").font(.system(size: 12)).foregroundStyle(t.text3)
+                        }
+                        Spacer()
+                        TextField(Host.current().localizedName ?? "This Mac", text: $senderDisplayName)
+                            .textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                            .font(.system(size: 13)).foregroundStyle(t.accentText)
+                            .frame(maxWidth: 150).disabled(engine.isRunning)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 11)
+                    RowDivider()
                     if supportsParty {
                         SettingRow(icon: "laptopcomputer", title: "Play on this Mac too",
                                    sub: "Hear it here, locked to the room") {
@@ -654,7 +671,11 @@ struct SenderView: View {
                 if engine.isRunning { engine.stop() } else { startSending() }
             }
 
-            if let error = engine.errorText { ErrorText(error) }
+            if let issue = engine.permissionIssue {
+                PermissionCard(issue: issue) { engine.restart() }
+            } else if let error = engine.errorText {
+                ErrorText(error)
+            }
 
             HelperText(supportsParty
                 ? "While streaming, this Mac's normal output is muted and replaced by the synced stream — every speaker plays together. First run asks for System Audio Recording permission."
@@ -673,39 +694,111 @@ struct SenderView: View {
             args.append("--capture")
         }
         if encryptOn && !streamKey.isEmpty { args += ["--key", streamKey] }
+        let name = senderDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { args += ["--name", name] }
         engine.autoRestart = false
         engine.start(engine: "audiosync-send", arguments: args)
     }
 }
 
-/// "N Macs listening" card with one chip per connected receiver.
+/// The sender's fleet shown as a live sonar scope: this Mac at the centre, a
+/// rotating sweep over concentric range rings, and one blip per connected Mac
+/// that lights up as the sweep passes it. On-brand with the name, and it turns
+/// "N Macs in sync" into something you watch.
 struct FleetCard: View {
     @Environment(\.theme) private var t
     let clients: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(clients)").font(.system(size: 30, weight: .bold)).tracking(-0.6)
                     .foregroundStyle(t.text)
-                Text(clients == 0 ? "waiting for Macs to join…"
-                     : "Mac\(clients == 1 ? "" : "s") listening, in sync")
+                Text(clients == 0 ? "listening for Macs to join…"
+                     : "Mac\(clients == 1 ? "" : "s") locked in sync")
                     .font(.system(size: 14)).foregroundStyle(t.text2)
+                Spacer()
             }
+            SonarRadar(clients: clients).frame(height: 196)
             if clients == 0 {
                 Text("Open Sonar on another Mac and tap Receive.")
                     .font(.system(size: 12.5)).foregroundStyle(t.text3)
-            } else {
-                FlexChips {
-                    ForEach(0..<min(clients, 8), id: \.self) { i in
-                        SpeakerChip(name: "Receiver \(i + 1)", sub: "in sync", playing: true)
-                    }
-                }
             }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardBackground(t)
+    }
+}
+
+/// A genuine radar sweep: range rings, a rotating beam with a fading wedge
+/// trail, and blips that flash when the beam crosses them. Pure Canvas at
+/// 60fps; positions are stable per receiver so blips don't jump around.
+struct SonarRadar: View {
+    @Environment(\.theme) private var t
+    let clients: Int
+
+    var body: some View {
+        TimelineView(.animation) { tl in
+            let now = tl.date.timeIntervalSinceReferenceDate
+            Canvas { ctx, size in
+                let r = min(size.width, size.height) / 2 - 4
+                let c = CGPoint(x: size.width / 2, y: size.height / 2)
+                let twoPi = 2 * Double.pi
+
+                // Range rings (the ripple motif).
+                for k in 1...3 {
+                    let rr = r * CGFloat(k) / 3
+                    ctx.stroke(Path(ellipseIn: CGRect(x: c.x - rr, y: c.y - rr, width: rr * 2, height: rr * 2)),
+                               with: .color(t.accent.opacity(0.16)), lineWidth: 1)
+                }
+
+                // Sweep: a soft wedge trailing the beam, plus the bright beam line.
+                let sweep = now.truncatingRemainder(dividingBy: twoPi / 0.55) * 0.55 // ~0.55 rev/s
+                let trail = 0.7 // radians of trailing wedge
+                var wedge = Path()
+                wedge.move(to: c)
+                wedge.addArc(center: c, radius: r,
+                             startAngle: .radians(sweep - trail), endAngle: .radians(sweep),
+                             clockwise: false)
+                wedge.closeSubpath()
+                ctx.fill(wedge, with: .color(t.accent.opacity(0.14)))
+                let beamEnd = CGPoint(x: c.x + CGFloat(cos(sweep)) * r, y: c.y + CGFloat(sin(sweep)) * r)
+                ctx.stroke(Path { $0.move(to: c); $0.addLine(to: beamEnd) },
+                           with: .color(t.accent.opacity(0.85)), lineWidth: 1.5)
+
+                // Blips: one per connected Mac, stable angle, flashing as the
+                // beam passes (echo) and fading until the next pass.
+                let n = max(0, min(clients, 12))
+                for i in 0..<n {
+                    let ba = (Double(i) + 0.5) / Double(n) * twoPi
+                    let br = r * (0.55 + 0.18 * sin(Double(i) * 2.3)) // varied range, deterministic
+                    let bp = CGPoint(x: c.x + CGFloat(cos(ba)) * br, y: c.y + CGFloat(sin(ba)) * br)
+                    var since = (sweep - ba).truncatingRemainder(dividingBy: twoPi)
+                    if since < 0 { since += twoPi }
+                    let echo = max(0, 1 - since / 1.1) // bright right after the beam passes
+                    let base: CGFloat = 3
+                    let dot = base + CGFloat(echo) * 2.5
+                    if echo > 0.02 {
+                        let halo = dot + CGFloat(echo) * 10
+                        ctx.fill(Path(ellipseIn: CGRect(x: bp.x - halo, y: bp.y - halo, width: halo * 2, height: halo * 2)),
+                                 with: .color(t.accent.opacity(0.22 * echo)))
+                    }
+                    ctx.fill(Path(ellipseIn: CGRect(x: bp.x - dot, y: bp.y - dot, width: dot * 2, height: dot * 2)),
+                             with: .color(t.accent.opacity(0.55 + 0.45 * echo)))
+                }
+
+                // Centre = this Mac (the sender): a small breathing ripple.
+                let pulse = (sin(now * 1.6) + 1) / 2
+                for (ringR, op) in [(8.0 + pulse * 4, 0.5), (4.0, 0.9)] {
+                    ctx.stroke(Path(ellipseIn: CGRect(x: c.x - ringR, y: c.y - ringR, width: ringR * 2, height: ringR * 2)),
+                               with: .color(t.accent.opacity(op)), lineWidth: 1.5)
+                }
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - 3, y: c.y - 3, width: 6, height: 6)),
+                         with: .color(t.accentLite))
+            }
+        }
+        .accessibilityLabel(clients == 0 ? "Searching for receivers" : "\(clients) receivers in sync")
     }
 }
 
@@ -718,6 +811,12 @@ struct ReceiverView: View {
     @AppStorage("streamKey") private var streamKey = ""
     @AppStorage("manualAddress") private var manualAddress = ""
     @State private var manualOpen = false
+
+    // Sender discovery / picker, before the engine starts.
+    @State private var pickState: PickState = .discovering
+    @State private var senders: [String] = []
+    @State private var chosenSender: String?
+    private enum PickState { case discovering, choosing, started }
 
     private enum Phase { case searching, connecting, playing, error }
     private var phase: Phase {
@@ -733,12 +832,103 @@ struct ReceiverView: View {
     private var receiverArgs: [String] {
         var args: [String] = []
         let manual = manualAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !manual.isEmpty { args += ["--connect", manual] }
+        if !manual.isEmpty {
+            args += ["--connect", manual]
+        } else if let s = chosenSender, !s.isEmpty {
+            args += ["--sender", s] // connect to the picked sender by name
+        }
         if !streamKey.isEmpty { args += ["--key", streamKey] }
         return args
     }
 
     var body: some View {
+        Group {
+            switch pickState {
+            case .discovering: discoveringView
+            case .choosing: choosingView
+            case .started: startedView
+            }
+        }
+        .onAppear(perform: beginDiscovery)
+    }
+
+    // MARK: discovery + picker (pre-engine)
+
+    private func beginDiscovery() {
+        if engine.isRunning { pickState = .started; return }
+        guard pickState == .discovering else { return }
+        // A saved manual address skips discovery entirely.
+        if !manualAddress.trimmingCharacters(in: .whitespaces).isEmpty { startListening(); return }
+        engine.discoverSenders { found in
+            senders = found
+            if found.count > 1 {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) { pickState = .choosing }
+            } else {
+                chosenSender = found.first   // 0 → plain browse; 1 → that one
+                startListening()
+            }
+        }
+    }
+
+    private func startListening() {
+        pickState = .started
+        restart()
+    }
+
+    private func pick(_ name: String) {
+        chosenSender = name
+        startListening()
+    }
+
+    private var discoveringView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            receiverHeader(state: .warn, label: "Looking for senders")
+            VStack(spacing: 26) {
+                RippleLoader(size: 168, duration: 2.6)
+                VStack(spacing: 5) {
+                    Text("Finding senders…")
+                        .font(.system(size: 17, weight: .semibold)).tracking(-0.2).foregroundStyle(t.text)
+                    Text("Scanning your Wi-Fi network").font(.system(size: 12.5)).foregroundStyle(t.text2)
+                }
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 18)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var choosingView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            receiverHeader(state: .warn, label: "\(senders.count) Macs are streaming")
+            Text("Choose a sender")
+                .font(.system(size: 17, weight: .semibold)).tracking(-0.2).foregroundStyle(t.text)
+            VStack(spacing: 8) {
+                ForEach(senders, id: \.self) { name in
+                    Button { pick(name) } label: { SenderPickRow(name: name) }
+                        .buttonStyle(.plain)
+                }
+            }
+            Button { chosenSender = nil; startListening() } label: {
+                Text("Connect automatically")
+                    .font(.system(size: 12.5)).foregroundStyle(t.accentText)
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 0)
+            CollapsibleLogs(lines: engine.logLines)
+        }
+    }
+
+    private func receiverHeader(state: StatusRow.State, label: String) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Receiver").font(.system(size: 20, weight: .semibold)).tracking(-0.4)
+                    .foregroundStyle(t.text)
+                StatusRow(state: state, label: label)
+            }
+            Spacer()
+        }
+    }
+
+    private var startedView: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -781,12 +971,6 @@ struct ReceiverView: View {
             HelperText("Finds the sender automatically over Wi-Fi and reconnects by itself if anything drops. Allow \"local network\" access if macOS asks.")
 
             CollapsibleLogs(lines: engine.logLines)
-        }
-        .onAppear {
-            if !engine.isRunning {
-                engine.autoRestart = true
-                engine.start(engine: "audiosync-recv", arguments: receiverArgs)
-            }
         }
     }
 
@@ -1165,6 +1349,54 @@ struct DiagnosisBanner: View {
     }
 }
 
+// MARK: - Permission remediation
+
+/// Turns a cryptic permission failure into a clear, actionable card: what's
+/// missing, why, a button straight to the right System Settings pane, and a
+/// "Try Again" once granted.
+struct PermissionCard: View {
+    @Environment(\.theme) private var t
+    let issue: EngineProcess.PermissionIssue
+    let onRetry: () -> Void
+
+    private var title: String {
+        issue == .systemAudio ? "Allow System Audio Recording" : "Allow Screen Recording"
+    }
+    private var detail: String {
+        issue == .systemAudio
+            ? "Sonar needs System Audio Recording to capture this Mac's sound and stream it in sync. Turn it on for Sonar in System Settings, then tap Try Again."
+            : "Sonar captures this Mac's audio via Screen Recording (no video is ever recorded). Turn it on for Sonar, then tap Try Again."
+    }
+    private var settingsURL: URL {
+        URL(string: issue == .screenRecording
+            ? "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            : "x-apple.systempreferences:com.apple.preference.security?Privacy")!
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "lock.shield.fill").font(.system(size: 15)).foregroundStyle(t.warn)
+                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(t.text)
+            }
+            Text(detail).font(.system(size: 12.5)).foregroundStyle(t.text2)
+                .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                MasButton(title: "Open System Settings", systemImage: "gearshape.fill",
+                          style: .primary, large: false) {
+                    NSWorkspace.shared.open(settingsURL)
+                }
+                MasButton(title: "Try Again", systemImage: "arrow.clockwise",
+                          style: .secondary, large: false, action: onRetry)
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(t.warnBg)
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(t.warn.opacity(0.4), lineWidth: 0.5)))
+    }
+}
+
 // MARK: - Manual connect
 
 struct ManualConnectCard: View {
@@ -1206,6 +1438,32 @@ struct ManualConnectCard: View {
             }
         }
         .cardBackground(t)
+    }
+}
+
+/// A tappable row in the "choose a sender" list: the ripple mark, the sender's
+/// friendly name, and a chevron.
+struct SenderPickRow: View {
+    @Environment(\.theme) private var t
+    let name: String
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            RippleMark(size: 24)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name).font(.system(size: 14, weight: .medium)).foregroundStyle(t.text)
+                Text("Tap to listen").font(.system(size: 11.5)).foregroundStyle(t.text3)
+            }
+            Spacer()
+            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(t.text3)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(hover ? t.surface3 : t.surface2)
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(t.sep, lineWidth: 0.5)))
+        .onHover { hover = $0 }
     }
 }
 
