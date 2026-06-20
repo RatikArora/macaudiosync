@@ -30,6 +30,6 @@ let package = Package(
         // Thin SwiftUI shell: drives the two CLI executables as child
         // processes and shows their status. No audio/network code of its own.
         .executableTarget(name: "MacAudioSyncApp", swiftSettings: v5),
-        .testTarget(name: "SyncCoreTests", dependencies: ["SyncCore"], swiftSettings: v5),
+        .testTarget(name: "SyncCoreTests", dependencies: ["SyncCore", "AudioPipeline"], swiftSettings: v5),
     ]
 )

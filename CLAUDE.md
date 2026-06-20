@@ -19,12 +19,16 @@ Ask the user which role this Mac plays if it isn't obvious from their request.
 
 ## The app
 
-`./make-app.sh` builds `dist/MacAudioSync.app` — a universal (arm64+x86_64)
+`./make-app.sh` builds `dist/Sonar.app` — a universal (arm64+x86_64)
 SwiftUI shell in `Sources/MacAudioSyncApp` that bundles and drives the two
 CLI engines as child processes (it contains NO audio/network code; it parses
 the engines' log lines for status — if you change log formats, update
-`EngineProcess.parse`. It now also parses `join-code=`, `diag=`, and the
-`via <transport>` suffix on the connected line). Receiver runs with
+`EngineProcess.parse`. It also parses `join-code=`, `diag=`, the
+`via <transport>` suffix on the connected line, and high-rate `viz=` spectrum
+frames — hex band magnitudes the receiver emits ~24×/s for the visualizer,
+which `parse` decodes into `spectrum` and deliberately keeps OUT of the
+activity log). The app also self-updates (`Updater`, checks `release/
+appcast.json` on GitHub). Receiver runs with
 auto-restart (now a backstop only — the engine self-heals network changes
 in-process without dying; see below). Sender auto-selects `--party`
 (macOS 14.2+) or `--capture` (older), and stays `autoRestart=false` on
@@ -243,7 +247,9 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
    `SyncedPlayer` (AVAudioEngine playback of a JitterBuffer against an injected
    master clock; used by receivers and by the sender's party mode — it runs the
    renderer's per-frame coverage mask through `GapConcealer` so a late/lost
-   packet is a click-free dip, not a pop). `Sources/AudioSyncSender`,
+   packet is a click-free dip, not a pop; it also feeds its output to a
+   `SpectrumAnalyzer` (Accelerate FFT → log-spaced bands) that drives the app's
+   real visualizer). `Sources/AudioSyncSender`,
    `Sources/AudioSyncReceiver` = thin Network.framework/ScreenCaptureKit/
    CoreAudio-tap shells. `AdaptiveController` is unit-tested but currently
    UNWIRED — the sender holds a fixed `bufferDelayNs` and never tunes it at

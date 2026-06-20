@@ -86,6 +86,7 @@ let options = parseReceiverOptions()
 var playback: SyncedPlayer?
 var headless: HeadlessRenderer?
 var statsTimer: DispatchSourceTimer?
+var vizTimer: DispatchSourceTimer?
 var client: ReceiverClient!
 
 func startPipeline() {
@@ -106,8 +107,30 @@ func startPipeline() {
         }
         playback = player
         log("playback engine started (\(Int(SyncedPlayer.defaultSampleRate)) Hz, \(SyncedPlayer.defaultChannels)ch)")
+        startVizTimer()
     }
     startStatsTimer()
+}
+
+/// Emit the real audio spectrum ~24×/s on a compact `viz=` line (hex bytes,
+/// one per band) for the app's visualizer. Not a log line — the app filters
+/// these out of the activity log. Only runs with real playback (not headless).
+func startVizTimer() {
+    let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+    timer.schedule(deadline: .now() + 0.2, repeating: 1.0 / 24.0)
+    timer.setEventHandler {
+        guard let bands = playback?.spectrum.bands() else { return }
+        var hex = "viz="
+        hex.reserveCapacity(4 + bands.count * 2)
+        for v in bands {
+            let byte = Int((min(1, max(0, v)) * 255).rounded())
+            hex += String(format: "%02x", byte)
+        }
+        hex += "\n"
+        FileHandle.standardError.write(Data(hex.utf8))
+    }
+    timer.resume()
+    vizTimer = timer
 }
 
 func startStatsTimer() {

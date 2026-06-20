@@ -838,7 +838,7 @@ struct ReceiverView: View {
                 }
                 Spacer()
             }
-            Waveform(level: engine.peak, loud: isLoud)
+            Waveform(bands: engine.spectrum, loud: isLoud)
             if let jitter = engine.syncJitterUs {
                 (Text("Locked to the sender within ")
                  + Text("±\(jitter) µs").foregroundColor(t.text).bold()
@@ -1024,39 +1024,59 @@ struct EqBars: View {
 
 // MARK: - Waveform (playing)
 
-/// 38 organic bars driven by layered sine motion and the live output level —
-/// calm shimmer when quiet, full flowing wave when the music plays.
+/// Smooths the engine's ~24 Hz spectrum frames up to 60 fps with a fast attack
+/// / slow decay so the bars rise sharply and fall gracefully — the natural feel
+/// of a real spectrum analyzer. Held by reference so the per-frame update never
+/// trips SwiftUI's "modifying state during update".
+final class SpectrumBars {
+    var values: [Float] = []
+
+    func advance(target: [Float], fallbackCount: Int) {
+        let n = target.isEmpty ? fallbackCount : target.count
+        if values.count != n { values = [Float](repeating: 0, count: n) }
+        for i in 0..<n {
+            let goal = target.isEmpty ? 0 : target[i]
+            let k: Float = goal > values[i] ? 0.55 : 0.16
+            values[i] += (goal - values[i]) * k
+        }
+    }
+}
+
+/// Real frequency-spectrum visualizer: log-spaced bands of the audio actually
+/// playing (FFT computed in the engine, see `SpectrumAnalyzer`), rendered as
+/// rounded bars mirrored about the centre line. Bass on the left, treble on the
+/// right. Falls back to a flat idle line when nothing is playing.
 struct Waveform: View {
     @Environment(\.theme) private var t
-    let level: Double
+    let bands: [Float]
     let loud: Bool
-    private let bars = 38
+    @State private var bars = SpectrumBars()
 
     var body: some View {
-        TimelineView(.animation) { tl in
-            let now = tl.date.timeIntervalSinceReferenceDate * 2.7
+        TimelineView(.animation) { _ in
             Canvas { ctx, size in
+                bars.advance(target: bands, fallbackCount: 32)
+                let vals = bars.values
+                let n = vals.count
+                guard n > 0 else { return }
+
                 let gap: CGFloat = 3
-                let bw = min(5, (size.width - gap * CGFloat(bars - 1)) / CGFloat(bars))
-                let totalW = bw * CGFloat(bars) + gap * CGFloat(bars - 1)
+                let bw = max(2.5, (size.width - gap * CGFloat(n - 1)) / CGFloat(n))
+                let totalW = bw * CGFloat(n) + gap * CGFloat(n - 1)
                 var x = (size.width - totalW) / 2
+                let midY = size.height / 2
+
                 let colors = loud ? [Color(hex: 0xFF9F0A), Color(hex: 0xFF4E8A)]
                                   : [t.accentLite, t.accent, t.accentStrong]
                 let shading = GraphicsContext.Shading.linearGradient(
                     Gradient(colors: colors),
                     startPoint: CGPoint(x: 0, y: 0),
                     endPoint: CGPoint(x: 0, y: size.height))
-                let amp = 0.5 + min(level, 1.0) * 0.6
-                for i in 0..<bars {
-                    let c = Double(i) / Double(bars - 1)
-                    let env = sin(c * .pi)
-                    let w = sin(now * 1.6 + c * 7) * 0.5 + 0.5
-                    let w2 = sin(now * 2.7 - c * 4) * 0.5 + 0.5
-                    let n = (sin(now * 9 + Double(i) * 11.3) * 0.5 + 0.5) * 0.25
-                    var v = 0.18 + (w * 0.6 + w2 * 0.4) * env * 0.78 + n * env
-                    v = min(1, max(0.06, v * amp))
-                    let h = max(4, CGFloat(v) * size.height)
-                    let rect = CGRect(x: x, y: (size.height - h) / 2, width: bw, height: h)
+
+                for i in 0..<n {
+                    let v = CGFloat(min(1, max(0, vals[i])))
+                    let h = max(3, v * (size.height - 2))
+                    let rect = CGRect(x: x, y: midY - h / 2, width: bw, height: h)
                     ctx.fill(Path(roundedRect: rect, cornerRadius: bw / 2), with: shading)
                     x += bw + gap
                 }

@@ -31,6 +31,9 @@ final class EngineProcess: ObservableObject {
     /// Receiver: plain-language guidance when audio can't get through
     /// (discovery blocked, or device-to-device traffic blocked).
     @Published var diagnosis: String?
+    /// Receiver: live frequency-spectrum band magnitudes (0...1) of the audio
+    /// actually playing, emitted ~24×/s by the engine for the visualizer.
+    @Published var spectrum: [Float] = []
 
     private var recentOffsetsMs: [Double] = []
 
@@ -98,6 +101,7 @@ final class EngineProcess: ObservableObject {
         joinCode = nil
         transport = nil
         diagnosis = nil
+        spectrum = []
         recentOffsetsMs = []
         statusText = "Starting…"
 
@@ -152,6 +156,7 @@ final class EngineProcess: ObservableObject {
         process?.terminate()
         process = nil
         isRunning = false
+        spectrum = []
         statusText = "Stopped"
     }
 
@@ -167,6 +172,13 @@ final class EngineProcess: ObservableObject {
     }
 
     private func parse(_ line: String) {
+        // Visualizer frames are high-rate machine data, not log: parse the
+        // hex band magnitudes and keep them out of the activity log entirely.
+        if line.hasPrefix("viz=") {
+            spectrum = Self.parseSpectrum(line.dropFirst(4))
+            return
+        }
+
         logLines.append(line)
         if logLines.count > 200 { logLines.removeFirst(logLines.count - 200) }
 
@@ -236,6 +248,22 @@ final class EngineProcess: ObservableObject {
         if line.contains("grant") || line.contains("failed") || line.contains("WARNING") {
             errorText = line.components(separatedBy: "] ").last ?? line
         }
+    }
+
+    /// Decode a `viz=` hex payload (two hex digits per band) into 0...1 floats.
+    private static func parseSpectrum<S: StringProtocol>(_ hex: S) -> [Float] {
+        let chars = Array(hex)
+        guard chars.count >= 2 else { return [] }
+        var out: [Float] = []
+        out.reserveCapacity(chars.count / 2)
+        var i = 0
+        while i + 1 < chars.count {
+            if let byte = UInt8(String(chars[i...i + 1]), radix: 16) {
+                out.append(Float(byte) / 255)
+            }
+            i += 2
+        }
+        return out
     }
 
     private func capture(_ pattern: String, in line: String) -> String? {

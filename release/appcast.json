@@ -1,5 +1,5 @@
 {
-  "version": "2.1",
-  "notes": "Click-free gap concealment (no more pops on a dropped packet), lighter Wi-Fi footprint (half the packet rate), a fixed rock-steady buffer, and a safer in-app updater.",
+  "version": "2.2",
+  "notes": "Real spectrum visualizer (an actual FFT of the audio playing, not an animation), click-free gap concealment, a lighter Wi-Fi footprint, a fixed rock-steady buffer, and a safer in-app updater.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip"
 }

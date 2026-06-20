@@ -41,6 +41,9 @@ public final class SyncedPlayer {
     // "break" you hear even when only a few ms went missing.
     private let concealer: GapConcealer
 
+    /// Real-time FFT spectrum of what's actually playing, for the visualizer.
+    public let spectrum: SpectrumAnalyzer
+
     public init(
         buffer: JitterBuffer,
         sampleRate: Double = SyncedPlayer.defaultSampleRate,
@@ -53,6 +56,7 @@ public final class SyncedPlayer {
         self.masterClock = masterClock
         self.scratch = [Float](repeating: 0, count: Self.maxFrames * channels)
         self.concealer = GapConcealer(channels: channels, sampleRate: sampleRate)
+        self.spectrum = SpectrumAnalyzer(sampleRate: sampleRate)
     }
 
     public func start() throws {
@@ -124,6 +128,9 @@ public final class SyncedPlayer {
         // Replace hard-silence gaps with a click-free hold-and-fade so a late
         // or lost packet is a brief dip, not a pop.
         concealer.process(&scratch, coverage: coverage, frames: frames)
+
+        // Feed the visualizer the audio we're about to play (cheap ring copy).
+        scratch.withUnsafeBufferPointer { spectrum.append($0, frames: frames, channels: channels) }
 
         // Copy scratch into the output buffer list (planar from a standard
         // format; handle a single interleaved buffer defensively too) and
