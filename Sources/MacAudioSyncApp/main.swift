@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-// MacAudioSync — play one Mac's audio on every Mac in the room, in sync.
+// Sonar — play one Mac's audio on every Mac in the room, in sync.
 // This app is a thin shell over the audiosync-send / audiosync-recv engines.
 
 struct MacAudioSyncRootApp: App {
@@ -152,7 +152,7 @@ struct RolePickerView: View {
                 .help("What happens if you keep tapping?")
 
             VStack(spacing: 6) {
-                Text("MacAudioSync")
+                Text("Sonar")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
                 Text("Every Mac in the room. One perfectly synced sound.")
                     .foregroundStyle(.secondary)
@@ -826,7 +826,7 @@ struct AboutSheet: View {
     var body: some View {
         VStack(spacing: 14) {
             AppLogo(size: 64)
-            Text("MacAudioSync")
+            Text("Sonar")
                 .font(.title.bold())
             Text("Every Mac in the room, one perfectly synced speaker system.")
                 .foregroundStyle(.secondary)
@@ -849,7 +849,7 @@ struct AboutSheet: View {
                 }
             }
 
-            Text("Version 1.1")
+            Text("Version 2.0")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .onTapGesture {
