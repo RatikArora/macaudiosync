@@ -1,6 +1,6 @@
 {
-  "version": "3.2",
-  "notes": "Updater fix: checks are robust to a stale release CDN (cache-busted) and no longer error when a manifest lacks a checksum — only the actual install requires one. Updates now apply cleanly from any older version.",
+  "version": "3.3",
+  "notes": "Smoother receiver audio: instead of nudging its clock by dropping or repeating a single sample (a faint periodic tick you'd need a mic to catch), each receiver now micro-resamples to its own speaker, so playback stays locked to the room with no seam. No setup change.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip",
-  "sha256": "2ad2d512ff475e95819a90aa37da7ea70c581c14d24a6a8941c8b4d1e73dc46e"
+  "sha256": "d9cc9bda08b02703fd8f8e3dd4dcf6c59ea68fdef128bd09b32b83f93ae1eb51"
 }
