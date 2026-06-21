@@ -1,6 +1,6 @@
 {
-  "version": "3.6",
-  "notes": "The Music / Video / Call switch now matches the rest of Sonar — a teal highlight that slides between the modes, an icon for each, and a tidy ‘Detected’ hint when it spots a call or video. Same behaviour as 3.5, just no longer the odd blue stock control.",
+  "version": "3.7",
+  "notes": "Smarter, more honest mode detection. Sonar no longer assumes a browser means video — on YouTube (which is just as often music or a lecture) it now says so plainly and lets you pick, instead of guessing wrong. It still confidently spots calls (mic in use) and real video players (QuickTime, VLC, Netflix, etc.). Defaults to Music when unsure, so nothing drops out. Update both Macs.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip",
-  "sha256": "86b21832d492603fce5267fa0746f078e2d7306deff0d933e2a61b9ed8c52e5e"
+  "sha256": "4d54af0cf4692852b485f9017a691bdcf8c18b916b37372a8d76e8b5bd8c88d5"
 }
