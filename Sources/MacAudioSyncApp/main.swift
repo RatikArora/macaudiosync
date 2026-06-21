@@ -660,8 +660,9 @@ struct SenderView: View {
     @AppStorage("streamKey") private var streamKey = ""
     @AppStorage("senderName") private var senderDisplayName = ""
     /// What detection thinks you're about to stream (refreshed while idle), used
-    /// to suggest the mode without ever switching a running stream.
-    @State private var detected: ContentMode = .music
+    /// to suggest the mode without ever switching a running stream. Only a
+    /// CONFIDENT reading suggests a mode; an ambiguous browser asks you to pick.
+    @State private var detected = ContentSuggestion()
 
     private var supportsParty: Bool {
         ProcessInfo.processInfo.isOperatingSystemAtLeast(
@@ -721,7 +722,7 @@ struct SenderView: View {
                         }
                         RowDivider()
                     }
-                    LatencyModeRow(mode: $latencyMode, detected: detected,
+                    LatencyModeRow(mode: $latencyMode, suggestion: detected,
                                    locked: engine.isRunning)
                     RowDivider()
                     SettingRow(icon: encryptOn ? "lock.fill" : "lock.open",
@@ -1614,7 +1615,7 @@ struct SettingRow<Trailing: View>: View {
 struct LatencyModeRow: View {
     @Environment(\.theme) private var t
     @Binding var mode: String
-    let detected: ContentMode
+    let suggestion: ContentSuggestion
     let locked: Bool
     @Namespace private var pill
 
@@ -1629,16 +1630,22 @@ struct LatencyModeRow: View {
     ]
     private let anim = Animation.spring(response: 0.32, dampingFraction: 0.82)
 
+    // Only nudge when we're actually sure AND it differs from the current pick.
+    private var confidentSuggestion: ContentMode? {
+        guard !locked, suggestion.confident, suggestion.mode.rawValue != mode else { return nil }
+        return suggestion.mode
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Text("Streaming").font(.system(size: 14, weight: .medium)).foregroundStyle(t.text)
                 Spacer()
-                if !locked && detected.rawValue != mode {
-                    Button { withAnimation(anim) { mode = detected.rawValue } } label: {
+                if let s = confidentSuggestion {
+                    Button { withAnimation(anim) { mode = s.rawValue } } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "sparkles").font(.system(size: 9, weight: .bold))
-                            Text("Detected \(detected.display)").font(.system(size: 11.5, weight: .semibold))
+                            Text("Detected \(s.display)").font(.system(size: 11.5, weight: .semibold))
                         }
                         .foregroundStyle(t.accentText)
                         .padding(.horizontal, 8).padding(.vertical, 3)
@@ -1677,9 +1684,21 @@ struct LatencyModeRow: View {
             .opacity(locked ? 0.55 : 1)
             .disabled(locked)
 
-            Text(options.first { $0.id == mode }?.sub ?? "")
+            // Honest about the hard case: a browser is playing audio and we
+            // genuinely can't tell a music video from a song from a film.
+            if !locked && suggestion.ambiguousBrowser {
+                HStack(spacing: 5) {
+                    Image(systemName: "questionmark.circle").font(.system(size: 11))
+                    Text("Browser audio — can't tell music from video. Pick above if it looks off.")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 .font(.system(size: 12)).foregroundStyle(t.text3)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(options.first { $0.id == mode }?.sub ?? "")
+                    .font(.system(size: 12)).foregroundStyle(t.text3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.horizontal, 16).padding(.vertical, 13)
     }

@@ -184,16 +184,22 @@ floor + `ceilingMs`):
   FaceTime back-and-forth.
 `--buffer-ms` overrides the floor (e.g. `--latency video --buffer-ms 60`).
 
-**Recognition is manual, not auto-switching** (a deliberate choice: changing
-latency mid-stream means a brief resync blip, so we never do it under the user).
-The app (`ContentDetector`) *suggests* a profile and pre-fills the picker:
-microphone-in-use (CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere` on
-the default input — catches every conferencing app with zero permissions) →
-**call**; a video player/browser frontmost (`NSWorkspace`) → **video**; else
-**music**. The user confirms/overrides via the segmented picker in `SenderView`
-(`LatencyModeRow`), which is locked while streaming. The CLI is purely manual
-(`--latency`). Switching profiles = stop and restart the sender at the new
-`--latency` (the app does this on the next Start).
+**Recognition is manual + honest, never auto-switching** (changing latency
+mid-stream means a brief resync blip, so we never do it under the user). The app
+(`ContentDetector`) only *suggests*, and only when it's actually SURE — because
+from captured audio you **cannot** tell music from video (same PCM). Confident
+signals: mic-in-use (CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere` on
+the default input, zero permissions — catches Zoom/Meet/Teams/FaceTime) or a
+conferencing app frontmost → **call**; a *dedicated* video player
+(QuickTime/VLC/IINA/TV/Netflix) frontmost → **video**. A **browser** frontmost is
+deliberately NOT treated as video — YouTube et al. is just as often music, and
+forcing the tight buffer on music risks dropouts (this was the bug). Instead, if
+a browser is up front AND audio is playing (`...DeviceIsRunningSomewhere` on the
+default *output*), the picker shows an honest "can't tell — pick it yourself"
+hint and defaults to **music**. Only a *confident* reading shows the
+"Detected …" pill. The user confirms/overrides via the segmented picker in
+`SenderView` (`LatencyModeRow`, `ContentSuggestion`), locked while streaming. CLI
+is purely manual (`--latency`). Switching profiles = stop and restart the sender.
 
 ### Buffer auto-raise within a profile (sender's `--buffer-ms` = the floor)
 
