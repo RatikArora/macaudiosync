@@ -67,6 +67,13 @@ needs right-click → Open (it's ad-hoc signed, no developer account).
   blocking device-to-device traffic / *client isolation* (*use a hotspot or a
   cable*) — instead of failing silently. The sender shows a copyable **join
   code** for the Manual Connect field.
+- **Knows music from video from calls.** Pick a latency profile — or let the
+  app pick for you. **Music** buffers generously so it never drops out (lip-sync
+  doesn't matter for audio). **Video** and **Call** stay tight (~100ms) so the
+  sender's own screen keeps lip-sync and a Zoom/Meet/Teams/FaceTime conversation
+  feels natural. The app auto-suggests the mode (microphone in use → Call, a
+  video app/browser up front → Video) and you can override it; switching is
+  manual so latency never changes mid-stream and surprises you.
 - **Lighter on the network, self-tuning buffer.** Audio is sent as 16-bit PCM
   (half the bandwidth of before, perceptually identical). The latency buffer
   **auto-adapts**: `--buffer-ms` is the floor, and when a receiver reports it's
@@ -168,6 +175,11 @@ audiosync-send:
                        auto-raises above this when a receiver runs low on
                        headroom, then holds. Watch the receiver's margin=. See
                        "Latency".
+  --latency <profile>  music (default) / video / call. music buffers generously
+                       (up to 400ms, dropout-first); video & call stay tight
+                       (~100ms) so lip-sync and conversation feel right. The app
+                       picks this for you (mic in use → call, video app → video)
+                       and lets you override; the CLI is manual.
   --no-adapt           don't auto-raise; pin the buffer at --buffer-ms
   --name <name>        Bonjour service name
   --no-p2p             disable the AWDL peer-to-peer link (router only)

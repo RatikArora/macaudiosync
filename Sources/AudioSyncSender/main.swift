@@ -20,11 +20,26 @@ struct SenderOptions {
     var followSystemMute = true
     var adapt = true
     var passphrase: String? = nil
+    var latency: LatencyProfile = .music
 
     enum Mode {
         case tone(frequency: Double)
         case capture
         case party
+    }
+
+    /// What you're streaming decides the latency tradeoff. Music can buffer
+    /// generously (dropout-free matters, nobody sees lip-sync); video and calls
+    /// must stay tight or the sender's own screen drifts out of lip-sync and a
+    /// conversation feels laggy. Each profile is a (floor, ceiling) the adaptive
+    /// buffer lives within — `--buffer-ms` overrides the floor.
+    enum LatencyProfile: String {
+        case music   // generous: floor 150, climb to 400 if the network needs it
+        case video   // tight: ~100ms so the sender's video stays in lip-sync
+        case call    // tight: ~100ms for natural back-and-forth (Zoom/Meet/etc.)
+
+        var defaultFloorMs: Int { self == .music ? 150 : 80 }
+        var ceilingMs: Int { self == .music ? 400 : 130 }
     }
 }
 
@@ -58,9 +73,16 @@ func parseSenderOptions() -> SenderOptions {
         guard let port = UInt16(p) else { fail("invalid --port \(p)") }
         options.port = port
     }
+    if let l = takeValue("--latency") {
+        guard let p = SenderOptions.LatencyProfile(rawValue: l.lowercased()) else {
+            fail("--latency must be music, video, or call")
+        }
+        options.latency = p
+        options.bufferDelayMs = p.defaultFloorMs // profile sets the floor…
+    }
     if let b = takeValue("--buffer-ms") {
         guard let ms = Int(b), (20...5000).contains(ms) else { fail("--buffer-ms must be 20–5000") }
-        options.bufferDelayMs = ms
+        options.bufferDelayMs = ms // …an explicit --buffer-ms overrides it
     }
     if let n = takeValue("--name") { options.name = n }
     if takeFlag("--no-p2p") { options.peerToPeer = false }
@@ -108,11 +130,18 @@ options:
                        specific ports like 7805). Receivers using --browse
                        auto-discover the port via Bonjour; --connect users
                        read it from the sender's startup log.
-  --buffer-ms <ms>     playback delay FLOOR, 20–5000 (default 150). Adaptation
-                       (on by default) only ever climbs from here, never below.
-                       larger = more network-jitter headroom, more latency.
-                       Watch "margin=" in the receiver's stats to tune:
-                       healthy margin minus ~30ms is your safe buffer floor.
+  --latency <profile>  what you're streaming, which sets the latency tradeoff:
+                         music (default) — buffer climbs to 400ms if needed so
+                           it never drops out (lip-sync doesn't matter for audio)
+                         video — keep it tight (~100ms, ceiling 130) so this
+                           Mac's own screen stays in lip-sync with the audio
+                         call — tight (~100ms) for natural Zoom/Meet/Teams/
+                           FaceTime back-and-forth
+  --buffer-ms <ms>     playback delay FLOOR, 20–5000 (overrides the profile
+                       floor). Adaptation (on by default) only climbs from here,
+                       never below, up to the profile's ceiling. larger = more
+                       jitter headroom, more latency. Watch "margin=" in the
+                       receiver's stats: healthy margin minus ~30ms is a safe floor.
   --no-adapt           don't auto-raise the buffer; pin it at --buffer-ms for
                        the whole stream (default: the sender ratchets the buffer
                        UP when a receiver reports low margin/fill — each raise is
@@ -148,6 +177,7 @@ do {
         peerToPeer: options.peerToPeer,
         passphrase: options.passphrase,
         bufferDelayMs: options.bufferDelayMs,
+        ceilingMs: options.latency.ceilingMs,
         followSystemMute: options.followSystemMute,
         adapt: options.adapt
     )

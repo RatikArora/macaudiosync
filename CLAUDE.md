@@ -108,7 +108,8 @@ app reflects it ("Muted — room is silent"). Disable with `--no-follow-mute`.
 own Mac otherwise wouldn't mute receivers.)
 
 Useful flags: `--tone [freq]` (test signal), `--no-local-play` (party
-without sender speakers), `--no-follow-mute`, `--no-adapt` (pin the buffer at
+without sender speakers), `--no-follow-mute`, `--latency <music|video|call>`
+(latency profile — see tuning; default music), `--no-adapt` (pin the buffer at
 the floor — disables auto-raise), `--port <p>`, `--buffer-ms <ms>` (see tuning),
 `--name <bonjour name>`, `--key <passphrase>` (encrypt/authenticate the
 stream — ChaCha20-Poly1305; receivers need the same `--key`; without it
@@ -166,7 +167,35 @@ but the sender **does NOT act on it** (it's informational, for the receiver's
 own stats and possible future use). The `feedback` case in `SenderServer.handle`
 is a no-op.
 
-### Latency tuning (sender's `--buffer-ms`, default 150 — now a FLOOR, auto-raised)
+### Latency profiles (`--latency music|video|call`) — pick the tradeoff
+
+What you stream decides the latency tradeoff, so the sender has three profiles
+(each is a `(floor, ceiling)` the adaptive buffer lives within;
+`SenderOptions.LatencyProfile`, passed to `SenderServer` as `bufferDelayMs`
+floor + `ceilingMs`):
+- **music** (default): floor 150, ceiling **400**. Dropout-free wins; lip-sync
+  is irrelevant for audio, so it may buffer generously. (The old ceiling was a
+  runaway 1000ms — that's the "ms got too high, video looked off" report; it's
+  now 400 for music and ~130 for video/call.)
+- **video**: floor 80, ceiling **130** (~100ms). Keeps the **sender's own
+  screen** in lip-sync — in `--party` the sender plays its audio `buffer-ms`
+  behind its video, so a big buffer = visible lip-sync drift on the sender.
+- **call**: floor 80, ceiling **130**. Tight for natural Zoom/Meet/Teams/
+  FaceTime back-and-forth.
+`--buffer-ms` overrides the floor (e.g. `--latency video --buffer-ms 60`).
+
+**Recognition is manual, not auto-switching** (a deliberate choice: changing
+latency mid-stream means a brief resync blip, so we never do it under the user).
+The app (`ContentDetector`) *suggests* a profile and pre-fills the picker:
+microphone-in-use (CoreAudio `kAudioDevicePropertyDeviceIsRunningSomewhere` on
+the default input — catches every conferencing app with zero permissions) →
+**call**; a video player/browser frontmost (`NSWorkspace`) → **video**; else
+**music**. The user confirms/overrides via the segmented picker in `SenderView`
+(`LatencyModeRow`), which is locked while streaming. The CLI is purely manual
+(`--latency`). Switching profiles = stop and restart the sender at the new
+`--latency` (the app does this on the next Start).
+
+### Buffer auto-raise within a profile (sender's `--buffer-ms` = the floor)
 
 End-to-end delay ≈ buffer-ms + ~25–40 ms fixed stack floor. **The buffer
 auto-adapts (default ON): `--buffer-ms` is the FLOOR/initial; the sender

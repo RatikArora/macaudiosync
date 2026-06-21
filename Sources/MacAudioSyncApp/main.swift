@@ -654,11 +654,14 @@ struct SenderView: View {
     @Environment(\.theme) private var t
     @Binding var role: Role
     @ObservedObject var engine: EngineProcess
-    @AppStorage("bufferMs") private var bufferMs = 150.0
+    @AppStorage("latencyMode") private var latencyMode = "music"
     @AppStorage("playLocally") private var playLocally = true
     @AppStorage("encryptOn") private var encryptOn = false
     @AppStorage("streamKey") private var streamKey = ""
     @AppStorage("senderName") private var senderDisplayName = ""
+    /// What detection thinks you're about to stream (refreshed while idle), used
+    /// to suggest the mode without ever switching a running stream.
+    @State private var detected: ContentMode = .music
 
     private var supportsParty: Bool {
         ProcessInfo.processInfo.isOperatingSystemAtLeast(
@@ -718,8 +721,8 @@ struct SenderView: View {
                         }
                         RowDivider()
                     }
-                    SliderRow(title: "Latency buffer", value: $bufferMs,
-                              range: 20...250, suffix: " ms", disabled: engine.isRunning)
+                    LatencyModeRow(mode: $latencyMode, detected: detected,
+                                   locked: engine.isRunning)
                     RowDivider()
                     SettingRow(icon: encryptOn ? "lock.fill" : "lock.open",
                                title: "Encrypt this stream",
@@ -757,10 +760,20 @@ struct SenderView: View {
 
             CollapsibleLogs(lines: engine.logLines)
         }
+        .onAppear { refreshDetection() }
+        // While idle, keep the suggestion current as the user opens a video or
+        // joins a call. Never touches a running stream (that's the manual rule).
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            if !engine.isRunning { refreshDetection() }
+        }
+    }
+
+    private func refreshDetection() {
+        detected = ContentDetector.suggested()
     }
 
     private func startSending() {
-        var args = ["--buffer-ms", String(Int(bufferMs))]
+        var args = ["--latency", latencyMode]
         if supportsParty {
             args.append("--party")
             if !playLocally { args.append("--no-local-play") }
@@ -1590,24 +1603,42 @@ struct SettingRow<Trailing: View>: View {
     }
 }
 
-struct SliderRow: View {
+/// Picks the latency profile (Music / Video / Call) and surfaces what detection
+/// thinks you're streaming, as a one-tap suggestion. Manual: the segmented
+/// control is the source of truth and is locked while streaming (so latency
+/// never changes mid-stream — which would cause an audible blip).
+struct LatencyModeRow: View {
     @Environment(\.theme) private var t
-    let title: String
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let suffix: String
-    let disabled: Bool
+    @Binding var mode: String
+    let detected: ContentMode
+    let locked: Bool
+
+    private let options: [(id: String, label: String, sub: String)] = [
+        ("music", "Music", "Smoothest — buffers up to 400ms"),
+        ("video", "Video", "Lip-sync — ~100ms"),
+        ("call",  "Call",  "Conversation — ~100ms"),
+    ]
 
     var body: some View {
-        VStack(spacing: 9) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(t.text)
+                Text("Streaming").font(.system(size: 14, weight: .medium)).foregroundStyle(t.text)
                 Spacer()
-                Text("\(Int(value))\(suffix)")
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(t.accentText)
+                if !locked && detected.rawValue != mode {
+                    Button { mode = detected.rawValue } label: {
+                        Text("Detected \(detected.display) · use")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(t.accentText)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            Slider(value: $value, in: range, step: 10).tint(t.accent).disabled(disabled)
+            Picker("", selection: $mode) {
+                ForEach(options, id: \.id) { Text($0.label).tag($0.id) }
+            }
+            .pickerStyle(.segmented).labelsHidden().disabled(locked)
+            Text(options.first { $0.id == mode }?.sub ?? "")
+                .font(.system(size: 12)).foregroundStyle(t.text3)
         }
         .padding(.horizontal, 16).padding(.vertical, 13)
     }

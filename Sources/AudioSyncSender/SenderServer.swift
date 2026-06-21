@@ -86,18 +86,18 @@ final class SenderServer {
     /// (capture taps audio before the output volume, so we silence it here).
     private let muteMonitor: SystemMuteMonitor?
 
-    init(port: UInt16, serviceName: String, peerToPeer: Bool = true, passphrase: String? = nil, bufferDelayMs: Int = 150, followSystemMute: Bool = true, adapt: Bool = true) throws {
+    init(port: UInt16, serviceName: String, peerToPeer: Bool = true, passphrase: String? = nil, bufferDelayMs: Int = 150, ceilingMs: Int = 400, followSystemMute: Bool = true, adapt: Bool = true) throws {
         self.muteMonitor = followSystemMute ? SystemMuteMonitor() : nil
         cipher = passphrase.flatMap { $0.isEmpty ? nil : StreamCipher(passphrase: $0) }
         self.serviceName = serviceName
         let clampedMs = max(20, min(bufferDelayMs, 5000))
         self.bufferDelayNs = UInt64(clampedMs) * 1_000_000
-        // --buffer-ms is the FLOOR; adaptation only ever climbs from there, up
-        // to a generous ceiling (a terrible network is allowed to trade latency
-        // for "audio doesn't break", which is the whole point of adapting).
+        // bufferDelayMs is the FLOOR/initial; adaptation climbs from there up to
+        // ceilingMs (set per latency profile: tight for video/call so lip-sync
+        // stays close, generous for music where dropout-free matters more).
+        let ceil = max(clampedMs, min(ceilingMs, 5000))
         self.controller = adapt
-            ? AdaptiveController(initialBufferMs: clampedMs, floorMs: clampedMs,
-                                 ceilMs: min(5000, max(clampedMs, 1000)))
+            ? AdaptiveController(initialBufferMs: clampedMs, floorMs: clampedMs, ceilMs: ceil)
             : nil
         // port == 0 → ask the OS for an ephemeral port (IANA dynamic range
         // 49152–65535). Corporate Wi-Fi controllers occasionally blocklist
