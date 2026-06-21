@@ -1607,38 +1607,79 @@ struct SettingRow<Trailing: View>: View {
 /// thinks you're streaming, as a one-tap suggestion. Manual: the segmented
 /// control is the source of truth and is locked while streaming (so latency
 /// never changes mid-stream — which would cause an audible blip).
+///
+/// Custom-drawn to match the app: a teal highlight that slides between segments
+/// (matchedGeometryEffect), icon + label per mode, on-brand instead of the
+/// system-blue stock segmented control.
 struct LatencyModeRow: View {
     @Environment(\.theme) private var t
     @Binding var mode: String
     let detected: ContentMode
     let locked: Bool
+    @Namespace private var pill
 
-    private let options: [(id: String, label: String, sub: String)] = [
-        ("music", "Music", "Smoothest — buffers up to 400ms"),
-        ("video", "Video", "Lip-sync — ~100ms"),
-        ("call",  "Call",  "Conversation — ~100ms"),
+    private struct Opt: Identifiable { let id, label, icon, sub: String }
+    private let options = [
+        Opt(id: "music", label: "Music", icon: "music.note",
+            sub: "Smoothest — buffers up to 400 ms so it never drops out"),
+        Opt(id: "video", label: "Video", icon: "film.fill",
+            sub: "Tight (~100 ms) so this Mac's screen stays in lip-sync"),
+        Opt(id: "call",  label: "Call",  icon: "video.fill",
+            sub: "Tight (~100 ms) for natural Zoom / Meet / FaceTime calls"),
     ]
+    private let anim = Animation.spring(response: 0.32, dampingFraction: 0.82)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
                 Text("Streaming").font(.system(size: 14, weight: .medium)).foregroundStyle(t.text)
                 Spacer()
                 if !locked && detected.rawValue != mode {
-                    Button { mode = detected.rawValue } label: {
-                        Text("Detected \(detected.display) · use")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(t.accentText)
+                    Button { withAnimation(anim) { mode = detected.rawValue } } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "sparkles").font(.system(size: 9, weight: .bold))
+                            Text("Detected \(detected.display)").font(.system(size: 11.5, weight: .semibold))
+                        }
+                        .foregroundStyle(t.accentText)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Capsule().fill(t.accent.opacity(0.15)))
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                }
+            }
+
+            HStack(spacing: 0) {
+                ForEach(options) { opt in
+                    let selected = mode == opt.id
+                    Button { withAnimation(anim) { mode = opt.id } } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: opt.icon).font(.system(size: 11.5, weight: .semibold))
+                            Text(opt.label).font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundStyle(selected ? .white : t.text2)
+                        .frame(maxWidth: .infinity).frame(height: 33)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(t.grad)
+                                    .shadow(color: t.accent.opacity(0.35), radius: 5, y: 2)
+                                    .matchedGeometryEffect(id: "pill", in: pill)
+                            }
+                        }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            Picker("", selection: $mode) {
-                ForEach(options, id: \.id) { Text($0.label).tag($0.id) }
-            }
-            .pickerStyle(.segmented).labelsHidden().disabled(locked)
+            .padding(3)
+            .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(t.surface3))
+            .opacity(locked ? 0.55 : 1)
+            .disabled(locked)
+
             Text(options.first { $0.id == mode }?.sub ?? "")
                 .font(.system(size: 12)).foregroundStyle(t.text3)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 16).padding(.vertical, 13)
     }
