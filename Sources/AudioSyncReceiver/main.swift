@@ -218,11 +218,14 @@ func startStatsTimer() {
             ))
         }
 
+        // Single synchronized read of the client-owned counters (mutated on
+        // the net queue) instead of four racy cross-queue field reads.
+        let diag = client.diagnosticsSnapshot()
         log("sync offset=\(offsetMs)ms rtt=\(rttUs)µs drift=\(driftPpm)ppm | " +
             "buffered=\(bufferedMs)ms margin=\(marginText) filled=\(filled) silent=\(silent) unsynced=\(unsynced) " +
-            "(\(filled * 100 / total)% fill) peak=\(String(format: "%.2f", peak)) | pkts=\(client.audioPacketsReceived) " +
+            "(\(filled * 100 / total)% fill) peak=\(String(format: "%.2f", peak)) | pkts=\(diag.audioPackets) " +
             "dup=\(client.buffer.duplicateCount) late=\(client.buffer.lateCount) " +
-            "tsJit=\(client.timestampJitterCount) decodeErr=\(client.decodeErrors)")
+            "tsJit=\(diag.tsJitter) decodeErr=\(diag.decodeErrors)")
     }
     timer.resume()
     statsTimer = timer

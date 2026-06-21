@@ -106,7 +106,8 @@ options:
                        specific ports like 7805). Receivers using --browse
                        auto-discover the port via Bonjour; --connect users
                        read it from the sender's startup log.
-  --buffer-ms <ms>     playback delay budget, 40–5000 (default 150);
+  --buffer-ms <ms>     playback delay budget, 20–5000 (default 150); FIXED for
+                       the whole stream (never auto-tuned).
                        larger = more network-jitter headroom, more latency.
                        Watch "margin=" in the receiver's stats to tune:
                        healthy margin minus ~30ms is your safe buffer floor.

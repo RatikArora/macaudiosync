@@ -62,6 +62,18 @@ final class ProcessTapCapture {
     }
 
     func start() throws {
+        // If any step after the tap/aggregate/IO-proc is created throws, tear
+        // down what we already built (stop() is idempotent) so we never leak a
+        // half-initialized process tap (which holds .mutedWhenTapped).
+        do {
+            try startBody()
+        } catch {
+            stop()
+            throw error
+        }
+    }
+
+    private func startBody() throws {
         // 1. Describe the tap: stereo mixdown of every process except ours,
         //    muting the tapped audio at the real output.
         let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [try ownProcessObject()])

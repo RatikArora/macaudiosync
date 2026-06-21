@@ -114,4 +114,46 @@ import Foundation
         let all = buffer.chunksOverlapping(startNs: 0, endNs: .max)
         #expect(all.map(\.playAtMasterNs) == all.map(\.playAtMasterNs).sorted())
     }
+
+    @Test func concurrentInsertDropAndQueryStayConsistent() {
+        // The real production contention: the render thread drops chunks every
+        // window (mutating watermark + removeAll) while the network thread
+        // inserts and the stats path queries. Exercises insert-vs-drop, which
+        // the render-only test above cannot.
+        let buffer = JitterBuffer()
+        let total = 2_000
+        let group = DispatchGroup()
+
+        group.enter()
+        DispatchQueue.global().async {
+            for i in 0..<total {
+                buffer.insert(self.chunk(seq: UInt32(i + 1), playAtMs: UInt64(1_000 + i * 5)))
+            }
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            for i in 0..<total {
+                buffer.dropChunks(endingBefore: UInt64(1_000 + i * 5) * 1_000_000)
+            }
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            for _ in 0..<total {
+                _ = buffer.chunksOverlapping(startNs: 0, endNs: .max)
+                _ = buffer.bufferedSpanNs
+            }
+            group.leave()
+        }
+
+        #expect(group.wait(timeout: .now() + 30) == .success, "concurrent insert/drop/query deadlocked")
+        // Sequences are unique, so every submission either inserted or was
+        // rejected as late — never a duplicate.
+        #expect(buffer.duplicateCount == 0)
+        #expect(buffer.insertedCount + buffer.lateCount == total)
+        // The surviving set must still be sorted by play time.
+        let all = buffer.chunksOverlapping(startNs: 0, endNs: .max)
+        #expect(all.map(\.playAtMasterNs) == all.map(\.playAtMasterNs).sorted())
+    }
 }

@@ -28,7 +28,10 @@ the engines' log lines for status — if you change log formats, update
 frames — hex band magnitudes the receiver emits ~24×/s for the visualizer,
 which `parse` decodes into `spectrum` and deliberately keeps OUT of the
 activity log). The app also self-updates (`Updater`, checks `release/
-appcast.json` on GitHub). Receiver runs with
+appcast.json` on GitHub — which MUST carry a `sha256` of `Sonar.app.zip`;
+the updater verifies it before swapping and refuses to install without it,
+so every release must regenerate the hash: `shasum -a 256 release/Sonar.app.zip`).
+Receiver runs with
 auto-restart (now a backstop only — the engine self-heals network changes
 in-process without dying; see below). Sender auto-selects `--party`
 (macOS 14.2+) or `--capture` (older), and stays `autoRestart=false` on

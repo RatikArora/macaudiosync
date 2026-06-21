@@ -71,16 +71,26 @@ final class ReceiverClient {
     /// network that blocks device-to-device traffic. Reset when traffic flows.
     private var isolationStrikes = 0
 
-    // Diagnostics
-    private(set) var audioPacketsReceived: UInt64 = 0
-    private(set) var clockRepliesReceived: UInt64 = 0
-    private(set) var decodeErrors: UInt64 = 0
+    // Diagnostics. Mutated in handle() on `queue`; read via diagnosticsSnapshot()
+    // which hops onto `queue`, so there is no cross-thread race.
+    private var audioPacketsReceived: UInt64 = 0
+    private var clockRepliesReceived: UInt64 = 0
+    private var decodeErrors: UInt64 = 0
     /// Consecutive-sequence chunks whose timestamps don't abut (>30 µs gap
     /// or overlap). Nonzero means the SENDER's capture timestamps jitter —
     /// audible as crackle even at 100% fill.
-    private(set) var timestampJitterCount: UInt64 = 0
+    private var timestampJitterCount: UInt64 = 0
     private var lastSequence: UInt32 = 0
     private var lastEndNs: UInt64 = 0
+    /// Skips the timestamp-abutment check for the very first chunk (there is no
+    /// prior chunk to abut), so tsJit starts at a true 0 instead of a spurious 1.
+    private var hasPriorChunk = false
+
+    /// Thread-safe snapshot of the diagnostic counters for the stats timer
+    /// (which runs on a different queue than the `handle()` writers).
+    func diagnosticsSnapshot() -> (audioPackets: UInt64, clockReplies: UInt64, decodeErrors: UInt64, tsJitter: UInt64) {
+        queue.sync { (audioPacketsReceived, clockRepliesReceived, decodeErrors, timestampJitterCount) }
+    }
 
     /// UDP parameters tuned for low-jitter audio: voice-class QoS (Wi-Fi
     /// WMM priority, no power-save buffering) and optional peer-to-peer
@@ -485,10 +495,11 @@ final class ReceiverClient {
             }
         case .audio(let chunk):
             audioPacketsReceived &+= 1
-            if chunk.sequence == lastSequence &+ 1 {
+            if hasPriorChunk && chunk.sequence == lastSequence &+ 1 {
                 let deltaNs = Int64(bitPattern: chunk.playAtMasterNs &- lastEndNs)
                 if deltaNs.magnitude > 30_000 { timestampJitterCount &+= 1 }
             }
+            hasPriorChunk = true
             lastSequence = chunk.sequence
             lastEndNs = chunk.endMasterNs
             if buffer.insert(chunk), let masterNow = sync.masterNs(forClientNs: receivedNs) {

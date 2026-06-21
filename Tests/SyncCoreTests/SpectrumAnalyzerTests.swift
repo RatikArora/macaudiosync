@@ -46,4 +46,30 @@ import Foundation
         silent.withUnsafeBufferPointer { analyzer.append($0, frames: 2_048, channels: 2) }
         #expect(analyzer.bands().allSatisfy { $0 == 0 }, "true silence must not be amplified into noise")
     }
+
+    @Test func nearSilenceStaysFlatRatherThanAmplified() {
+        // A signal below the noise floor must read flat, NOT be auto-gained up
+        // to full scale (which would turn hiss into a dancing display).
+        let analyzer = SpectrumAnalyzer(sampleRate: rate)
+        feedSine(analyzer, freq: 1_000, frames: 4_096, amplitude: 1e-6)
+        #expect(analyzer.bands().allSatisfy { $0 == 0 }, "near-silence must stay flat, not amplified")
+    }
+
+    @Test func autoGainLetsAQuietPassageRecoverAfterALoudOne() {
+        // After a loud passage the running peak is high; a following quiet (but
+        // audible) passage must climb back toward full scale as the AGC decays —
+        // a never-decaying AGC would keep the quiet passage dim forever.
+        let analyzer = SpectrumAnalyzer(bandCount: 32, sampleRate: rate)
+        feedSine(analyzer, freq: 1_000, frames: 4_096, amplitude: 0.5)
+        _ = analyzer.bands() // AGC jumps up to the loud peak
+        feedSine(analyzer, freq: 1_000, frames: 4_096, amplitude: 0.05)
+        var prev = analyzer.bands().max() ?? 0
+        var rose = false
+        for _ in 0..<60 {
+            let cur = analyzer.bands().max() ?? 0
+            if cur > prev + 1e-4 { rose = true }
+            prev = cur
+        }
+        #expect(rose, "auto-gain must let a quiet passage recover as the running peak decays")
+    }
 }

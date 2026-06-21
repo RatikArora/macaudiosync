@@ -161,9 +161,10 @@ audiosync-send:
   --port <port>        UDP port (default 0 = OS-assigned ephemeral port,
                        avoids corporate Wi-Fi port blocklists; Bonjour
                        publishes the actual port for `--browse` receivers)
-  --buffer-ms <ms>     STARTING playback delay budget 20–5000 (default 150);
-                       the sender then auto-tunes it from receiver feedback
-                       (raises under jitter, lowers when clean). See "Latency".
+  --buffer-ms <ms>     playback delay budget 20–5000 (default 150); FIXED for
+                       the whole stream (never auto-tuned). Raise it by hand on
+                       a flaky network — watch the receiver's margin=. See
+                       "Latency".
   --name <name>        Bonjour service name
   --no-p2p             disable the AWDL peer-to-peer link (router only)
   --key <passphrase>   encrypt + authenticate the stream (both sides must match)
@@ -267,7 +268,7 @@ Two different "latencies" matter — don't confuse them:
 
 ## Testing
 
-76 tests cover the wire protocol (round-trips incl. the v2 codec byte and
+The test suite covers the wire protocol (round-trips incl. the v2 codec byte and
 feedback message, truncation/garbage fuzzing, MTU bound), the audio codecs
 (Float32 bit-exact, Int16 within half an LSB and clamp-safe), the adaptive
 controller (raise-on-distress, holds and never lowers, floor/ceiling clamps,

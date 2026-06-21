@@ -4,37 +4,37 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Sonar</string>
 	<key>CFBundleExecutable</key>
 	<string>MacAudioSyncApp</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.ratikarora.sonar</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>Sonar</string>
-	<key>CFBundleDisplayName</key>
-	<string>Sonar</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
-	<key>CFBundleIconFile</key>
-	<string>AppIcon</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.0</string>
+	<string>3.1</string>
 	<key>CFBundleVersion</key>
-	<string>11</string>
+	<string>12</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Sonar captures this Mac's audio to stream it to your other Macs in sync.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Sonar does not record the microphone; this permission can be required by system audio capture.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Sonar finds and streams to receiver Macs on your Wi-Fi network.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_audiosync._udp</string>
 	</array>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Sonar finds and streams to receiver Macs on your Wi-Fi network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sonar does not record the microphone; this permission can be required by system audio capture.</string>
 </dict>
 </plist>

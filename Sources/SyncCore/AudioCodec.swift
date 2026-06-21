@@ -49,6 +49,11 @@ public enum AudioCodec: UInt8 {
         case .pcmFloat32:
             return try reader.floats(count: count)
         case .pcmInt16:
+            // Validate that the datagram actually contains `count` Int16s before
+            // reserving — otherwise a malformed header (large frameCount) forces
+            // a big allocation per packet from attacker-chosen input. Mirrors
+            // the guard in BinaryReader.floats.
+            guard reader.remaining >= count * 2 else { throw WireError.truncated }
             var out = [Float]()
             out.reserveCapacity(count)
             for _ in 0..<count {

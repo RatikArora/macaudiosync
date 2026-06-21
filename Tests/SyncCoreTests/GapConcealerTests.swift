@@ -82,4 +82,72 @@ import Foundation
         #expect(hardStep >= 0.5, "hard silence has a big click step")
         #expect(concealedStep < hardStep / 4, "concealment removes most of the click")
     }
+
+    @Test func guardRejectsMismatchedLengths() {
+        // The real-time-safety bounds guard must no-op (not read OOB) when the
+        // coverage/buffer/frames don't agree — leaving the buffer untouched.
+        let c = GapConcealer(channels: 2, sampleRate: rate)
+        var buf1 = [Float](repeating: 0.3, count: 8) // 4 frames * 2ch
+        let orig1 = buf1
+        c.process(&buf1, coverage: [true, true], frames: 4) // coverage too short
+        #expect(buf1 == orig1, "too-short coverage must no-op")
+
+        var buf2 = [Float](repeating: 0.3, count: 4) // only 2 frames at 2ch
+        let orig2 = buf2
+        c.process(&buf2, coverage: [Bool](repeating: true, count: 4), frames: 4) // buffer too short
+        #expect(buf2 == orig2, "too-short buffer must no-op")
+
+        var buf3 = [Float](repeating: 0.3, count: 8)
+        let orig3 = buf3
+        c.process(&buf3, coverage: [Bool](repeating: true, count: 4), frames: 0)
+        #expect(buf3 == orig3, "frames <= 0 must no-op")
+    }
+
+    @Test func stereoChannelsAreHeldAndDecayIndependently() {
+        // Per-channel hold/decay through a gap, with distinct L/R values — would
+        // catch an interleaved-indexing bug (e.g. swapping or holding the wrong
+        // channel) that a mono test can't.
+        let c = GapConcealer(channels: 2, sampleRate: rate)
+        let covered = 4, gap = 200, frames = covered + gap
+        var buf = [Float](repeating: 0, count: frames * 2)
+        for f in 0..<covered { buf[f * 2] = 0.5; buf[f * 2 + 1] = -0.3 }
+        var cov = [Bool](repeating: true, count: frames)
+        for f in covered..<frames { cov[f] = false }
+        c.process(&buf, coverage: cov, frames: frames)
+
+        // First gap frame holds each channel's OWN last value.
+        #expect(buf[covered * 2] == 0.5)
+        #expect(buf[covered * 2 + 1] == -0.3)
+        // Each channel decays toward 0 independently: L stays positive and
+        // non-increasing, R stays negative and rises toward 0 (no L/R swap).
+        for f in (covered + 1)..<frames {
+            #expect(buf[f * 2] >= 0 && buf[f * 2] <= buf[(f - 1) * 2])
+            #expect(buf[f * 2 + 1] <= 0 && buf[f * 2 + 1] >= buf[(f - 1) * 2 + 1])
+        }
+        #expect(abs(buf[(frames - 1) * 2]) < 0.05 && abs(buf[(frames - 1) * 2 + 1]) < 0.05,
+                "both channels fade out within the gap")
+    }
+
+    @Test func gapSpanningMultipleProcessCallsStaysContinuous() {
+        // A dropout that straddles render-buffer boundaries: state must persist
+        // across process() calls (decay continues, no per-call reset/pop).
+        let gc = GapConcealer(channels: 1, sampleRate: rate)
+        var bufA = [Float](repeating: 0.5, count: 200) // 100 covered, then gap
+        for f in 100..<200 { bufA[f] = 0 }
+        var covA = [Bool](repeating: true, count: 200)
+        for f in 100..<200 { covA[f] = false }
+        gc.process(&bufA, coverage: covA, frames: 200)
+
+        var bufB = [Float](repeating: 0, count: 200) // entirely inside the gap
+        gc.process(&bufB, coverage: [Bool](repeating: false, count: 200), frames: 200)
+
+        var bufC = [Float](repeating: 0.5, count: 200) // audio resumes
+        gc.process(&bufC, coverage: [Bool](repeating: true, count: 200), frames: 200)
+
+        // The decay continued across the A→B seam (gain did NOT reset to 1).
+        #expect(bufB[0] <= bufA[199] + 1e-6, "decay must continue across the buffer boundary")
+        #expect(bufB[0] < 0.5, "B is deep in the decayed tail, not a fresh hold")
+        // No click at any seam across the whole joined stream.
+        #expect(maxStep(bufA + bufB + bufC, channels: 1) < 0.05)
+    }
 }

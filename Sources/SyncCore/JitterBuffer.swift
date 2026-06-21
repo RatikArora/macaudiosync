@@ -56,6 +56,19 @@ public final class JitterBuffer {
         return chunks.filter { $0.endMasterNs > startNs && $0.playAtMasterNs < endNs }
     }
 
+    /// Allocation-free variant for the real-time render thread: append the
+    /// overlapping chunks into a caller-owned, reused array (call
+    /// `removeAll(keepingCapacity: true)` is done here) instead of returning a
+    /// freshly heap-allocated array every audio callback.
+    public func chunksOverlapping(startNs: UInt64, endNs: UInt64, into out: inout [AudioChunk]) {
+        out.removeAll(keepingCapacity: true)
+        lock.lock()
+        defer { lock.unlock() }
+        for chunk in chunks where chunk.endMasterNs > startNs && chunk.playAtMasterNs < endNs {
+            out.append(chunk)
+        }
+    }
+
     /// Drop chunks that end at or before `ns` and advance the late-arrival
     /// watermark. Call this with the start of each render window.
     public func dropChunks(endingBefore ns: UInt64) {
@@ -75,8 +88,13 @@ public final class JitterBuffer {
     public var bufferedSpanNs: UInt64 {
         lock.lock()
         defer { lock.unlock() }
-        guard let first = chunks.first, let last = chunks.last else { return 0 }
-        return last.endMasterNs - first.playAtMasterNs
+        guard let first = chunks.first else { return 0 }
+        // The last chunk by start time isn't necessarily the one that ends
+        // latest (a slightly-earlier but longer chunk can end later), so take
+        // the true max end across the buffer.
+        var maxEnd = first.playAtMasterNs
+        for chunk in chunks where chunk.endMasterNs > maxEnd { maxEnd = chunk.endMasterNs }
+        return maxEnd - first.playAtMasterNs
     }
 
     public func removeAll() {

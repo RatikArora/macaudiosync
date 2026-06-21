@@ -205,13 +205,13 @@ struct UpdateBanner: View {
 
     var body: some View {
         switch updater.status {
-        case .available(let version, _, let url):
+        case .available(let version, _, let url, let sha):
             bar {
                 Image(systemName: "arrow.down.circle.fill").foregroundStyle(t.accentText)
                 Text("Sonar \(version) is available")
                     .font(.system(size: 12.5, weight: .medium)).foregroundStyle(t.text)
                 Spacer()
-                Button { updater.downloadAndInstall(from: url) } label: {
+                Button { updater.downloadAndInstall(from: url, sha256: sha) } label: {
                     Text("Update")
                         .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                         .padding(.horizontal, 12).frame(height: 26)
@@ -1872,7 +1872,7 @@ struct UpdateSection: View {
                     Text("You're on the latest version").foregroundStyle(t.text2)
                 }
                 .font(.system(size: 12.5))
-            case .available(let version, let notes, let url):
+            case .available(let version, let notes, let url, let sha):
                 VStack(spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.down.circle.fill").foregroundStyle(t.accentText)
@@ -1885,7 +1885,7 @@ struct UpdateSection: View {
                     }
                     MasButton(title: "Download & Install", systemImage: "square.and.arrow.down",
                               style: .primary, large: false) {
-                        updater.downloadAndInstall(from: url)
+                        updater.downloadAndInstall(from: url, sha256: sha)
                     }
                 }
             case .downloading:

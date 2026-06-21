@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CryptoKit
 
 /// Self-update from the project's GitHub repo. The app checks a small JSON
 /// manifest (`release/appcast.json`), compares versions, and — if a newer one
@@ -15,7 +16,7 @@ final class Updater: ObservableObject {
         case idle
         case checking
         case upToDate
-        case available(version: String, notes: String, url: URL)
+        case available(version: String, notes: String, url: URL, sha256: String)
         case downloading
         case installing
         case error(String)
@@ -33,6 +34,7 @@ final class Updater: ObservableObject {
         let version: String
         let notes: String?
         let url: String
+        let sha256: String?
     }
 
     // MARK: - Check
@@ -53,9 +55,16 @@ final class Updater: ObservableObject {
                         || host.hasSuffix("githubusercontent.com") else {
                     throw UpdaterError("Update has an unexpected download location.")
                 }
+                // Require a SHA-256 so the payload can be integrity-checked
+                // before we ever swap it in — the host allow-list only defeats
+                // a transit MITM, not a compromised release endpoint.
+                let sha = (cast.sha256 ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+                guard sha.count == 64, sha.allSatisfy({ $0.isHexDigit }) else {
+                    throw UpdaterError("Update manifest is missing a valid checksum — not installing.")
+                }
                 if Self.isNewer(cast.version, than: Self.currentVersion) {
                     status = .available(version: cast.version,
-                                        notes: cast.notes ?? "", url: url)
+                                        notes: cast.notes ?? "", url: url, sha256: sha)
                 } else {
                     status = .upToDate
                 }
@@ -67,13 +76,21 @@ final class Updater: ObservableObject {
 
     // MARK: - Download + install
 
-    func downloadAndInstall(from url: URL) {
+    func downloadAndInstall(from url: URL, sha256 expected: String) {
         status = .downloading
         Task {
             do {
                 let (downloaded, response) = try await URLSession.shared.download(from: url)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                     throw UpdaterError("Download failed.")
+                }
+                // Verify the payload against the manifest's SHA-256 BEFORE
+                // touching the installed app. A mismatch means the bytes were
+                // tampered with or corrupted — refuse to install.
+                let data = try Data(contentsOf: downloaded)
+                let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                guard actual == expected else {
+                    throw UpdaterError("Update failed its integrity check — not installing.")
                 }
                 status = .installing
                 try await Task.detached(priority: .userInitiated) {
@@ -132,7 +149,6 @@ final class Updater: ObservableObject {
         if /usr/bin/ditto "$NEWAPP" "$STAGING" && [ -d "$STAGING/Contents/MacOS" ]; then
             rm -rf "$DEST"
             /bin/mv "$STAGING" "$DEST"
-            /usr/bin/xattr -cr "$DEST" 2>/dev/null
             echo "[sonar-update] swapped OK -> $DEST"
         else
             echo "[sonar-update] staging copy FAILED; leaving the installed app untouched"

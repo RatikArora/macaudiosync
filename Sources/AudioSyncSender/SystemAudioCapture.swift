@@ -17,6 +17,11 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let queue = DispatchQueue(label: "audiosync.sender.capture")
     private let sampleRate: Int
     private let channels: Int
+    private var restartAttempts = 0
+    /// When the current stream came up. A stop after a long healthy run is an
+    /// isolated transient (budget reset); rapid flapping accumulates toward the
+    /// retry cap.
+    private var streamStartedNs: UInt64 = 0
 
     init(sampleRate: Int = 48_000, channels: Int = 2, onAudio: @escaping Block) {
         self.sampleRate = sampleRate
@@ -48,6 +53,7 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
         try await stream.startCapture()
         self.stream = stream
+        streamStartedNs = MonotonicClock.nowNs()
         log("system audio capture started (\(sampleRate) Hz, \(channels)ch)")
     }
 
@@ -103,7 +109,36 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     // MARK: - SCStreamDelegate
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        // Some SCStream stops are transient (display reconfiguration, a brief
+        // SCK glitch). Self-heal in-process with a bounded retry rather than
+        // killing the sender and dropping every receiver.
         log("capture stopped with error: \(error.localizedDescription)")
-        exit(1)
+        self.stream = nil
+        // Forgive an isolated stop after a long healthy run; only RAPID flapping
+        // (repeated stops without a sustained healthy stream) burns the budget.
+        if streamStartedNs != 0, MonotonicClock.nowNs() &- streamStartedNs > 30_000_000_000 {
+            restartAttempts = 0
+        }
+        scheduleRestart()
+    }
+
+    private func scheduleRestart() {
+        restartAttempts += 1
+        guard restartAttempts <= 3 else {
+            log("capture failed to restart after 3 attempts — exiting")
+            exit(1)
+        }
+        queue.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            Task {
+                do { try await self.start() }
+                catch {
+                    // A hard-failing restart must advance the budget too, not
+                    // dead-end after a single silent retry.
+                    log("capture restart failed: \(error.localizedDescription)")
+                    self.scheduleRestart()
+                }
+            }
+        }
     }
 }

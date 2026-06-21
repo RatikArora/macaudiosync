@@ -1,5 +1,6 @@
 import Foundation
 import Accelerate
+import os
 
 /// Real-time frequency spectrum of the audio being played, for the receiver's
 /// visualizer. The audio thread feeds it samples cheaply; a slower timer thread
@@ -17,7 +18,11 @@ public final class SpectrumAnalyzer {
     private let window: [Float]
     private let sampleRate: Double
 
-    private let lock = NSLock()
+    // os_unfair_lock (via OSAllocatedUnfairLock) rather than NSLock: the audio
+    // render thread calls append() every callback, and this is the lightweight
+    // lock Apple recommends for the very short critical sections (a ring memcpy)
+    // we hold here. The heavy FFT in bands() runs AFTER the lock is released.
+    private let lock = OSAllocatedUnfairLock()
     private var ring: [Float]
     private var writeIdx = 0
 
@@ -111,8 +116,13 @@ public final class SpectrumAnalyzer {
             if v > frameMax { frameMax = v }
         }
 
-        // Below the noise floor: report flat silence, don't amplify hiss.
-        if frameMax < 1e-3 { return [Float](repeating: 0, count: bandCount) }
+        // Below the noise floor: report flat silence, don't amplify hiss — but
+        // keep decaying the running peak so a quiet passage after a loud one
+        // isn't normalized against a stale-high gain when audio returns.
+        if frameMax < 1e-3 {
+            agc *= 0.97
+            return [Float](repeating: 0, count: bandCount)
+        }
 
         // Auto-gain: normalize to a slowly-decaying running peak so the display
         // tracks relative dynamics instead of absolute level.

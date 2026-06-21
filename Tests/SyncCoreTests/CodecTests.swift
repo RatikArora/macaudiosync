@@ -52,4 +52,23 @@ import Foundation
         var r = BinaryReader(Data([0, 0, 0, 0]))
         #expect(throws: (any Error).self) { _ = try AudioCodec.opus.decodeSamples(&r, count: 1) }
     }
+
+    @Test func int16BoundaryValuesAreExact() {
+        // Symmetric ±32767 scale, clamped, never overflowing to -32768.
+        #expect(AudioCodec.toInt16(1.0) == 32767)    // +full scale, no overflow
+        #expect(AudioCodec.toInt16(-1.0) == -32767)  // symmetric, not -32768
+        #expect(AudioCodec.toInt16(0) == 0)
+        #expect(AudioCodec.toInt16(2.0) == 32767)    // clamped, not wrapped
+        #expect(AudioCodec.toInt16(-2.0) == -32767)
+        // A foreign encoder's asymmetric -32768 must clamp to -1.0, never below.
+        #expect(AudioCodec.fromInt16(-32768) == -1.0)
+        #expect(AudioCodec.fromInt16(Int16.max) == 1.0)
+    }
+
+    @Test func int16DecodeRejectsTruncatedPayload() {
+        // Header claims 8 samples but only 2 bytes (1 sample) follow — must
+        // throw rather than reserve/allocate from the attacker-chosen count.
+        var r = BinaryReader(Data([0x00, 0x00]))
+        #expect(throws: (any Error).self) { _ = try AudioCodec.pcmInt16.decodeSamples(&r, count: 8) }
+    }
 }

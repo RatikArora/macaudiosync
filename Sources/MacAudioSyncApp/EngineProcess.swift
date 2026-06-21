@@ -58,6 +58,10 @@ final class EngineProcess: ObservableObject {
     var autoRestart = false
 
     private var process: Process?
+    /// The pipe read handle for the current engine; retained so we can clear
+    /// its readabilityHandler — otherwise it keeps firing on EOF after the
+    /// child exits, busy-spinning a thread, and leaks one per relaunch.
+    private var readHandle: FileHandle?
     private var lineBuffer = ""
     private var userStopped = false
     private var lastEngine = ""
@@ -117,10 +121,14 @@ final class EngineProcess: ObservableObject {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe
+        // All of found/buffer/finished are touched from both the FileHandle
+        // delivery thread and the timeout — serialize every access on one queue
+        // so finish() is truly single-shot and there's no data race.
+        let q = DispatchQueue(label: "audiosync.discover")
         var found: [String] = []
         var buffer = ""
         var finished = false
-        func finish() {
+        func finish() { // always on q
             if finished { return }
             finished = true
             pipe.fileHandleForReading.readabilityHandler = nil
@@ -128,24 +136,32 @@ final class EngineProcess: ObservableObject {
             DispatchQueue.main.async { completion(found) }
         }
         pipe.fileHandleForReading.readabilityHandler = { handle in
-            guard let text = String(data: handle.availableData, encoding: .utf8) else { return }
-            buffer += text
-            while let nl = buffer.firstIndex(of: "\n") {
-                let line = String(buffer[..<nl])
-                buffer = String(buffer[buffer.index(after: nl)...])
-                if line.hasPrefix("sender=") {
-                    let name = String(line.dropFirst(7))
-                    if !name.isEmpty && !found.contains(name) { found.append(name) }
-                } else if line.contains("sender-list-done") {
-                    finish()
+            let data = handle.availableData
+            guard let text = String(data: data, encoding: .utf8) else { return }
+            q.async {
+                buffer += text
+                if buffer.utf8.count > 65536 && !buffer.contains("\n") { buffer = "" }
+                while let nl = buffer.firstIndex(of: "\n") {
+                    let line = String(buffer[..<nl])
+                    buffer = String(buffer[buffer.index(after: nl)...])
+                    if line.hasPrefix("sender=") {
+                        let name = String(line.dropFirst(7))
+                        if !name.isEmpty && !found.contains(name) { found.append(name) }
+                    } else if line.contains("sender-list-done") {
+                        finish()
+                    }
                 }
             }
         }
         do { try proc.run() } catch { completion([]); return }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish() }
+        q.asyncAfter(deadline: .now() + timeout) { finish() }
     }
 
     private func launch() {
+        // Tear down any previous pipe handler (e.g. on an autoRestart relaunch)
+        // so we never leave a second EOF-spinning dispatch source alive.
+        readHandle?.readabilityHandler = nil
+        readHandle = nil
         let engine = lastEngine
         guard let url = Self.engineURL(engine) else {
             errorText = "\(engine) binary not found in the app bundle"
@@ -176,12 +192,19 @@ final class EngineProcess: ObservableObject {
         process.standardOutput = pipe
         process.standardError = pipe // engine logs go to stderr
 
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        let readHandle = pipe.fileHandleForReading
+        self.readHandle = readHandle
+        readHandle.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
             DispatchQueue.main.async { self?.ingest(text) }
         }
-        process.terminationHandler = { [weak self] proc in
+        process.terminationHandler = { [weak self, readHandle] proc in
+            // Stop THIS process's pipe spinning on EOF. Clear the handle that
+            // belonged to it (captured), never `self.readHandle` — on a relaunch
+            // race the property may already point at the successor's handle, and
+            // niling that would silence the freshly-started engine.
+            readHandle.readabilityHandler = nil
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isRunning = false
@@ -217,6 +240,8 @@ final class EngineProcess: ObservableObject {
 
     func stop() {
         userStopped = true
+        readHandle?.readabilityHandler = nil
+        readHandle = nil
         process?.terminate()
         process = nil
         isRunning = false
@@ -228,6 +253,9 @@ final class EngineProcess: ObservableObject {
 
     private func ingest(_ text: String) {
         lineBuffer += text
+        // Defensive: a wedged engine emitting a huge chunk with no newline must
+        // not grow lineBuffer without bound. Drop an over-long unterminated buffer.
+        if lineBuffer.utf8.count > 65536 && !lineBuffer.contains("\n") { lineBuffer = "" }
         while let newline = lineBuffer.firstIndex(of: "\n") {
             let line = String(lineBuffer[..<newline])
             lineBuffer = String(lineBuffer[lineBuffer.index(after: newline)...])

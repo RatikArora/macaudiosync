@@ -203,4 +203,10 @@ import Foundation
         w.put(UInt16(0))  // one sample's worth of bytes
         #expect(throws: (any Error).self) { try Wire.decode(w.data) }
     }
+
+    @Test func sizingHandlesOpusZeroByteWidth() {
+        // .opus has bytesPerSample == 0; the max(1, ...) guard must prevent a
+        // divide-by-zero and still return a positive frame count.
+        #expect(Wire.maxFramesPerPacket(for: .opus, channels: 2) > 0)
+    }
 }

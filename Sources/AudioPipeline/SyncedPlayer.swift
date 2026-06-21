@@ -34,6 +34,9 @@ public final class SyncedPlayer {
     private let channels: Int
     private var scratch: [Float]
     private var coverage: [Bool] = []
+    /// Reused on the render thread so fetching the overlapping chunks doesn't
+    /// heap-allocate a fresh array every audio callback.
+    private var overlapScratch: [AudioChunk] = []
     public let stats = RenderStatsAccumulator()
 
     // Turns late/lost-packet silence gaps into click-free dips. A dropped
@@ -113,8 +116,11 @@ public final class SyncedPlayer {
         }
 
         let windowNs = UInt64(Double(frames) / sampleRate * 1e9)
+        // Fetch overlapping chunks into the reused scratch (no per-callback heap
+        // allocation on the real-time thread).
+        buffer.chunksOverlapping(startNs: windowStart, endNs: windowStart + windowNs, into: &overlapScratch)
         let renderStats = TimelineRenderer.render(
-            chunks: buffer.chunksOverlapping(startNs: windowStart, endNs: windowStart + windowNs),
+            chunks: overlapScratch,
             into: &scratch,
             frames: frames,
             channels: channels,

@@ -9,6 +9,12 @@ final class SenderServer {
     private let queue = DispatchQueue(label: "audiosync.sender.net")
     private let pathMonitor = NWPathMonitor()
     private var clients: [String: ClientState] = [:]
+    /// Accepted connections that haven't authenticated yet. UDP connections
+    /// never self-transition to `.failed`, so a peer that connects but never
+    /// sends a valid packet (wrong --key, a port scanner, a half-open receiver)
+    /// would otherwise sit here forever. The stats sweep reaps these after a
+    /// short grace window. Guarded by `clientsLock`.
+    private var pending: [String: (connection: NWConnection, sinceNs: UInt64)] = [:]
     private let clientsLock = NSLock()
     private var sequence: UInt32 = 0
 
@@ -217,6 +223,11 @@ final class SenderServer {
 
     private func accept(_ connection: NWConnection) {
         let key = String(describing: connection.endpoint)
+        // Track as pending until it authenticates, so it can be reaped if it
+        // never does (see `pending`).
+        clientsLock.lock()
+        pending[key] = (connection, MonotonicClock.nowNs())
+        clientsLock.unlock()
         connection.stateUpdateHandler = { [weak self, weak connection] state in
             guard let self, let connection else { return }
             switch state {
@@ -238,6 +249,7 @@ final class SenderServer {
     private func removeClient(_ key: String) {
         clientsLock.lock()
         let removed = clients.removeValue(forKey: key)
+        pending.removeValue(forKey: key)
         clientsLock.unlock()
         if removed != nil { log("receiver disconnected: \(key)") }
     }
@@ -263,10 +275,12 @@ final class SenderServer {
         // keepalive bookkeeping, so unauthenticated peers can't stay "alive".
         let payload: Data
         if let cipher {
-            guard let opened = try? cipher.open(data) else { return }
+            // Wrong/absent key: drop the connection immediately rather than
+            // leaving it pending — a wrong-key peer will never authenticate.
+            guard let opened = try? cipher.open(data) else { connection.cancel(); return }
             payload = opened
         } else {
-            guard !StreamCipher.looksSealed(data) else { return }
+            guard !StreamCipher.looksSealed(data) else { connection.cancel(); return }
             payload = data
         }
 
@@ -274,6 +288,7 @@ final class SenderServer {
         let isNew = clients[key] == nil
         if isNew {
             clients[key] = ClientState(connection: connection, lastSeenNs: receivedNs)
+            pending.removeValue(forKey: key) // promoted from pending → authenticated
         } else {
             clients[key]?.lastSeenNs = receivedNs
         }
@@ -352,11 +367,13 @@ final class SenderServer {
     private func broadcast(_ data: Data) {
         clientsLock.lock()
         let connections = clients.values.map(\.connection)
+        // Count under the same lock the stats timer reads it under — sendAudio
+        // runs on the capture queue, the stats timer on the net queue.
+        packetsSent &+= UInt64(connections.count)
         clientsLock.unlock()
         for connection in connections {
             connection.send(content: data, completion: .contentProcessed { _ in })
         }
-        packetsSent &+= UInt64(connections.count)
     }
 
     // MARK: - Stats / housekeeping
@@ -375,11 +392,17 @@ final class SenderServer {
                 state.connection.cancel()
                 self.clients.removeValue(forKey: key)
             }
+            // Reap connections that never authenticated within ~10 s.
+            let abandoned = self.pending.filter { now &- $0.value.sinceNs > 10_000_000_000 }
+            for (key, entry) in abandoned {
+                entry.connection.cancel() // .cancelled → removeClient clears pending
+                self.pending.removeValue(forKey: key)
+            }
             let clientCount = self.clients.count
+            let sent = self.packetsSent // read under the same lock broadcast writes it
             self.clientsLock.unlock()
             for key in stale.keys { log("receiver timed out: \(key)") }
 
-            let sent = self.packetsSent
             let rate = (sent - self.lastStatsPacketsSent) / 5
             self.lastStatsPacketsSent = sent
             log("clients=\(clientCount) packets/s=\(rate)")
