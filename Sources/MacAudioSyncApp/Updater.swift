@@ -43,8 +43,14 @@ final class Updater: ObservableObject {
         status = .checking
         Task {
             do {
-                var request = URLRequest(url: appcastURL)
-                request.cachePolicy = .reloadIgnoringLocalCacheData
+                // Cache-bust: GitHub's raw CDN can serve a stale manifest for
+                // minutes after a release, which would otherwise show the wrong
+                // version (or a checksum-less old manifest). A unique query and
+                // a strict cache policy force a fresh fetch.
+                var comps = URLComponents(url: appcastURL, resolvingAgainstBaseURL: false)
+                comps?.queryItems = [URLQueryItem(name: "_", value: String(Int(Date().timeIntervalSince1970)))]
+                var request = URLRequest(url: comps?.url ?? appcastURL)
+                request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                     throw UpdaterError("Couldn't reach the update server.")
@@ -55,13 +61,10 @@ final class Updater: ObservableObject {
                         || host.hasSuffix("githubusercontent.com") else {
                     throw UpdaterError("Update has an unexpected download location.")
                 }
-                // Require a SHA-256 so the payload can be integrity-checked
-                // before we ever swap it in — the host allow-list only defeats
-                // a transit MITM, not a compromised release endpoint.
+                // The checksum is REQUIRED to install (see downloadAndInstall),
+                // but checking only compares versions — a missing checksum must
+                // never turn an "up to date" check into an error.
                 let sha = (cast.sha256 ?? "").trimmingCharacters(in: .whitespaces).lowercased()
-                guard sha.count == 64, sha.allSatisfy({ $0.isHexDigit }) else {
-                    throw UpdaterError("Update manifest is missing a valid checksum — not installing.")
-                }
                 if Self.isNewer(cast.version, than: Self.currentVersion) {
                     status = .available(version: cast.version,
                                         notes: cast.notes ?? "", url: url, sha256: sha)
@@ -77,6 +80,12 @@ final class Updater: ObservableObject {
     // MARK: - Download + install
 
     func downloadAndInstall(from url: URL, sha256 expected: String) {
+        // Integrity is enforced HERE (not at check time): refuse to install
+        // anything we can't verify against a published checksum.
+        guard expected.count == 64, expected.allSatisfy({ $0.isHexDigit }) else {
+            status = .error("This update can't be verified (no checksum published) — not installing.")
+            return
+        }
         status = .downloading
         Task {
             do {

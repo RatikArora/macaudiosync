@@ -1,6 +1,6 @@
 {
-  "version": "3.1",
-  "notes": "Hardening release: the in-app updater now verifies a SHA-256 of the download before installing and no longer disarms Gatekeeper; real-time-safety, data-race, leak and robustness fixes from a full code review; 95 tests.",
+  "version": "3.2",
+  "notes": "Updater fix: checks are robust to a stale release CDN (cache-busted) and no longer error when a manifest lacks a checksum — only the actual install requires one. Updates now apply cleanly from any older version.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip",
-  "sha256": "926a41b9db413b7e247c980da41ac79d2ebc75923c1eaee2367e3a32122d0e2f"
+  "sha256": "2ad2d512ff475e95819a90aa37da7ea70c581c14d24a6a8941c8b4d1e73dc46e"
 }
