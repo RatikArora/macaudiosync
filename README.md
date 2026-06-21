@@ -302,13 +302,15 @@ Healthy output looks like `filled=48000 silent=0 ... (100% fill)` with
   deadlines, but each device adds its own DAC latency (~5–15 ms, similar
   across MacBooks, so in practice they match closely). A calibration step
   could trim this with `kAudioDevicePropertyLatency`.
-- **No micro-resampler for DAC drift yet.** Each Mac's DAC crystal runs a
-  few ppm off; alignment is recomputed every render window so drift cannot
-  *accumulate*, but the correction still lands as a repeated/skipped frame at
-  a chunk boundary every few tens of seconds (in practice inaudible). A proper
-  micro-resampler driven by `DriftEstimator` would smooth this out — and is the
-  same artifact-free technique a future buffer-growth scheme would use (grow by
-  inserting/stretching samples, never by shifting packet timestamps).
+- **DAC-drift micro-resampler (done).** Each Mac's DAC crystal runs a few ppm
+  off. The receiver no longer corrects this by snapping its render window to
+  the master clock (which dropped/repeated a single frame at the correction
+  step — a faint periodic seam click). Instead `SyncedPlayer` runs a continuous
+  fractional playhead with a gentle servo that micro-resamples (linear
+  interpolation, ±0.003 max rate trim ≈ inaudible) so playback locks to the
+  local DAC without ever skipping a frame. Same artifact-free technique a
+  future buffer-growth scheme would use (stretch samples, never shift packet
+  timestamps). Could still upgrade linear → windowed-sinc interpolation.
 - **16-bit PCM on the wire** (~1.5 Mbps/receiver) — half the old Float32
   size and perceptually transparent (local `--party` playback stays full
   Float32). Packets are also sized for the codec (~320 frames each), so the

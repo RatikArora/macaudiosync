@@ -208,3 +208,82 @@ import Foundation
         #expect(samples.map(abs).max()! <= 0.2 + 1e-6)
     }
 }
+
+extension TimelineRendererTests {
+
+    // MARK: - Resampling renderer
+
+    private func renderResampled(
+        _ chunks: [AudioChunk], frames: Int, windowStartNs: UInt64,
+        startOffsetFrames: Double, ratio: Double
+    ) -> (out: [Float], coverage: [Bool], stats: TimelineRenderer.RenderStats) {
+        var out = [Float](repeating: .nan, count: frames * channels)
+        var cov = [Bool]()
+        var grid = [Float]()
+        var gcov = [Bool]()
+        let stats = TimelineRenderer.renderResampled(
+            chunks: chunks, into: &out, coverage: &cov, frames: frames, channels: channels,
+            sampleRate: rate, windowStartMasterNs: windowStartNs,
+            startOffsetFrames: startOffsetFrames, ratio: ratio,
+            gridScratch: &grid, gridCoverage: &gcov
+        )
+        return (out, cov, stats)
+    }
+
+    @Test func resampledIsBitExactAtUnitRatioAndZeroOffset() {
+        // ratio == 1 and no sub-frame offset must reproduce the grid renderer
+        // exactly — the bit-exact guarantee holds when there's nothing to resample.
+        let samples = (0..<320).map { Float($0) / 320.0 }
+        let chunk = AudioChunk(sequence: 1, playAtMasterNs: 1_000_000_000, sampleRate: rate, channels: channels, samples: samples)
+        let plain = render([chunk], frames: 160, windowStartNs: 1_000_000_000)
+        let resampled = renderResampled([chunk], frames: 160, windowStartNs: 1_000_000_000, startOffsetFrames: 0, ratio: 1)
+        #expect(resampled.out == plain.out, "resampled passthrough must equal the grid renderer bit-for-bit")
+        #expect(resampled.stats.framesFilled == 160)
+    }
+
+    @Test func resampledInterpolatesLinearlyAtHalfFrame() {
+        // A per-frame ramp sampled at a +0.5 frame offset must give the midpoints.
+        let frameCount = 64
+        let samples = (0..<frameCount).flatMap { f -> [Float] in [Float(f), Float(f)] } // both channels = frame index
+        let chunk = AudioChunk(sequence: 1, playAtMasterNs: 0, sampleRate: rate, channels: channels, samples: samples)
+        let (out, _, _) = renderResampled([chunk], frames: 32, windowStartNs: 0, startOffsetFrames: 0.5, ratio: 1)
+        // out[f] should be (f + (f+1)) / 2 = f + 0.5
+        for f in 0..<32 {
+            let v = out[f * 2]
+            #expect(abs(v - (Float(f) + 0.5)) < 1e-4)
+        }
+    }
+
+    @Test func resampledDropsNoFramesUnderDrift() {
+        // Stream a long ramp through many small windows with a steady playhead +
+        // a 30 ppm rate ratio (DAC-drift correction) and confirm the output is
+        // monotonic and continuous across every window boundary — the old
+        // frame-snapping renderer would skip/repeat a sample at the seams.
+        let totalFrames = 48_000
+        let samples = (0..<totalFrames).flatMap { f -> [Float] in [Float(f), Float(f)] }
+        let sr: Double = 48_000
+        let chunk = AudioChunk(sequence: 1, playAtMasterNs: 0, sampleRate: sr, channels: 2, samples: samples)
+        let ratio: Double = 1.000_03 // +30 ppm
+        let frameNs: Double = 1e9 / 48_000
+        var playhead: Double = 0
+        let win = 512
+        var prev: Float = -1
+        var windows = 0
+        while playhead * sr / 1e9 + Double(win) * ratio < Double(totalFrames) - 4 {
+            let posFrames: Double = playhead * sr / 1e9
+            let off: Double = posFrames - posFrames.rounded(.down)
+            let wStart = UInt64((playhead - off * frameNs).rounded())
+            let (out, cov, _) = renderResampled([chunk], frames: win, windowStartNs: wStart, startOffsetFrames: off, ratio: ratio)
+            for f in 0..<win where cov[f] {
+                let v = out[f * 2]
+                // Strictly increasing (no repeat) and no big jump (no skip).
+                #expect(v > prev - 1e-3, "non-monotonic at window \(windows) frame \(f): \(v) after \(prev)")
+                #expect(v - prev < 3.0, "discontinuity (skipped frames) at window \(windows) frame \(f): \(v) after \(prev)")
+                prev = v
+            }
+            playhead += Double(win) * ratio * frameNs
+            windows += 1
+        }
+        #expect(windows > 80, "should have exercised many window boundaries, got \(windows)")
+    }
+}

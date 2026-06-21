@@ -34,10 +34,34 @@ public final class SyncedPlayer {
     private let channels: Int
     private var scratch: [Float]
     private var coverage: [Bool] = []
+    /// Integer-master-grid scratch for the resampling renderer (reused).
+    private var gridScratch: [Float] = []
+    private var gridCoverage: [Bool] = []
     /// Reused on the render thread so fetching the overlapping chunks doesn't
     /// heap-allocate a fresh array every audio callback.
     private var overlapScratch: [AudioChunk] = []
     public let stats = RenderStatsAccumulator()
+
+    // Continuous fractional playhead, in master-clock nanoseconds, of the next
+    // output frame. This is what makes playback artifact-free: instead of
+    // re-snapping the render window to the master clock every callback — which
+    // drops or repeats a whole sample at each DAC-drift / clock-correction step,
+    // a faint periodic tick — we advance this playhead smoothly and let a gentle
+    // servo micro-resample (a few tens of ppm) so it tracks the master clock
+    // without ever skipping a frame. nil until the first clock sync.
+    private var playheadMasterNs: Double?
+    /// Master frames consumed per output frame (≈ 1; the servo nudges it).
+    private var rateRatio: Double = 1
+    private let frameNs: Double
+    /// Jump bigger than this (startup, reconnect, wake-from-sleep) → re-anchor
+    /// the playhead instead of trying to slew across it.
+    private let resyncThresholdNs: Double = 50_000_000
+    /// Proportional servo: close a standing offset over ~this long. Short enough
+    /// to track drift, long enough that the implied pitch change is inaudible.
+    private let servoTimeNs: Double = 500_000_000
+    /// Hard clamp on the rate correction (±). 0.003 = ~5 cents, well below
+    /// audibility, and far above any real crystal drift (<50 ppm).
+    private let maxRateDeviation: Double = 0.003
 
     // Turns late/lost-packet silence gaps into click-free dips. A dropped
     // packet would otherwise snap the signal to 0 and back — that step is the
@@ -58,6 +82,7 @@ public final class SyncedPlayer {
         self.channels = channels
         self.masterClock = masterClock
         self.scratch = [Float](repeating: 0, count: Self.maxFrames * channels)
+        self.frameNs = 1e9 / sampleRate
         self.concealer = GapConcealer(channels: channels, sampleRate: sampleRate)
         self.spectrum = SpectrumAnalyzer(sampleRate: sampleRate)
     }
@@ -109,27 +134,59 @@ public final class SyncedPlayer {
             hostNs = MonotonicClock.nowNs()
         }
 
-        guard let windowStart = masterClock(hostNs) else {
+        guard let targetU = masterClock(hostNs) else {
             writeSilence() // not clock-synced yet
             stats.addUnsynced(frames: frames)
+            playheadMasterNs = nil // re-anchor on resume
             return
         }
+        let target = Double(targetU) // where output frame 0 should land in master time
 
-        let windowNs = UInt64(Double(frames) / sampleRate * 1e9)
+        // Advance / re-anchor the continuous playhead and update the drift servo.
+        let playhead: Double
+        if let p = playheadMasterNs, abs(target - p) < resyncThresholdNs {
+            playhead = p
+            // Proportional servo: error > 0 means we're behind master time, so
+            // consume master content a touch faster (ratio > 1) to catch up.
+            let error = target - p
+            let correction = max(-maxRateDeviation, min(maxRateDeviation, error / servoTimeNs))
+            rateRatio = 1 + correction
+        } else {
+            playhead = target // first sync / big jump (reconnect, wake): re-anchor
+            rateRatio = 1
+        }
+
+        // Decompose the playhead into a canonical master frame grid (stable chunk
+        // placement across callbacks) plus the sub-frame phase the interpolator
+        // needs. Computed relative to the playhead to keep Double precision (the
+        // absolute frame index is huge — never multiply it back up by 1e9).
+        let posFrames = playhead * sampleRate / 1e9
+        let startOffsetFrames = posFrames - posFrames.rounded(.down)
+        let windowStart = UInt64((playhead - startOffsetFrames * frameNs).rounded())
+        let spanFrames = Double(frames) * rateRatio + startOffsetFrames + 2
+        let windowEnd = windowStart &+ UInt64(spanFrames * frameNs)
+
         // Fetch overlapping chunks into the reused scratch (no per-callback heap
         // allocation on the real-time thread).
-        buffer.chunksOverlapping(startNs: windowStart, endNs: windowStart + windowNs, into: &overlapScratch)
-        let renderStats = TimelineRenderer.render(
+        buffer.chunksOverlapping(startNs: windowStart, endNs: windowEnd, into: &overlapScratch)
+        let renderStats = TimelineRenderer.renderResampled(
             chunks: overlapScratch,
             into: &scratch,
+            coverage: &coverage,
             frames: frames,
             channels: channels,
             sampleRate: sampleRate,
             windowStartMasterNs: windowStart,
-            coverage: &coverage
+            startOffsetFrames: startOffsetFrames,
+            ratio: rateRatio,
+            gridScratch: &gridScratch,
+            gridCoverage: &gridCoverage
         )
         buffer.dropChunks(endingBefore: windowStart)
         stats.add(renderStats)
+
+        // Advance the playhead by exactly what we consumed this callback.
+        playheadMasterNs = playhead + Double(frames) * rateRatio * frameNs
 
         // Replace hard-silence gaps with a click-free hold-and-fade so a late
         // or lost packet is a brief dip, not a pop.

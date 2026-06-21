@@ -312,6 +312,22 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
    asks "what does the master timeline put in this window?" Alignment is
    recomputed from timestamps every callback so errors can't accumulate.
    The end-to-end tests assert bit-exact reproduction — keep them passing.
+   - **Drift-locked playback (no frame-snap clicks).** `SyncedPlayer` does NOT
+     re-anchor its render window to the master clock every callback — that
+     snapped a whole sample at each DAC-drift / clock-correction step (a faint
+     periodic tick that needed an external mic to spot; the audio data was
+     complete, the receiver was just dropping/repeating one frame to stay
+     time-aligned). Instead it advances a **continuous fractional playhead**
+     and a gentle proportional servo nudges the consume rate by a few tens of
+     ppm (`rateRatio`, clamped ±0.003 ≈ 5 cents, inaudible) so the playhead
+     tracks the master clock by **micro-resampling** (`TimelineRenderer.
+     renderResampled`, linear interpolation) rather than skipping frames. A
+     jump bigger than `resyncThresholdNs` (50 ms: startup, reconnect, wake)
+     re-anchors instead of slewing. At `ratio == 1` + zero sub-frame offset
+     `renderResampled` is bit-for-bit identical to the grid `render`, so the
+     bit-exact tests and `--party` identity-clock path are unaffected. The
+     headless test renderer still uses contiguous-window grid `render` (it
+     measures fill, doesn't drive a real DAC).
 
 ## Roadmap (next features, in value order)
 
@@ -326,8 +342,11 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
    receiver that lacks it still gets PCM. The codec seam + per-packet tag are
    already in place.
 4. Device-latency calibration (`kAudioDevicePropertyLatency`) per receiver.
-5. Micro-resampler driven by `DriftEstimator` for DAC drift (the adaptive
-   buffer already uses a smooth sub-threshold slew — extend that technique).
+5. ~~Micro-resampler for DAC drift~~ — DONE (2026-06-22): `SyncedPlayer`'s
+   continuous playhead + servo + `TimelineRenderer.renderResampled` resamples
+   to the local DAC instead of frame-snapping, killing the periodic seam click.
+   (Could still be refined: drive the servo from `DriftEstimator` directly, or
+   swap linear interp for windowed-sinc if golden ears object.)
 6. Party-mode niceties: handle default-output-device changes mid-stream
    (rebuild the aggregate); video lip-sync mode (small fixed buffer +
    wired link guidance).
