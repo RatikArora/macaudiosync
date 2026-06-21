@@ -1,6 +1,6 @@
 {
-  "version": "3.4",
-  "notes": "Audio no longer breaks up on a jittery network. When a receiver starts running low on headroom, the sender now automatically raises the shared buffer just enough to keep the stream clean — then holds it steady. Each adjustment is a single brief, click-free dip rather than the static older versions had. Update both Macs (the sender does the work). Set it by hand with --buffer-ms, or turn it off with --no-adapt.",
+  "version": "3.5",
+  "notes": "Music, video and calls now each get the right latency. Earlier the buffer could grow large enough to throw video out of lip-sync — now there's a Music / Video / Call switch on the sender. Music buffers generously so it never drops; Video and Call stay tight (~100ms) so the screen stays in sync and conversation feels natural. The app even pre-picks the mode for you (mic in use → Call, a video app up front → Video) and you can override it. Update both Macs.",
   "url": "https://github.com/RatikArora/macaudiosync/raw/main/release/Sonar.app.zip",
-  "sha256": "8988f3125dd5a5d2a4d9f75986eb0360702da39bcf18c8fe0ccb6f42cb4c67a1"
+  "sha256": "11595a1dc38bc9cdf91cfc8a273e246eba630071a7e25390c9ac03079fd8ca00"
 }
