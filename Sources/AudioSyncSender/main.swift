@@ -18,6 +18,7 @@ struct SenderOptions {
     var peerToPeer = true
     var localPlayback = true
     var followSystemMute = true
+    var adapt = true
     var passphrase: String? = nil
 
     enum Mode {
@@ -68,6 +69,7 @@ func parseSenderOptions() -> SenderOptions {
     let party = takeFlag("--party") || takeFlag("--capture-mute")
     if takeFlag("--no-local-play") { options.localPlayback = false }
     if takeFlag("--no-follow-mute") { options.followSystemMute = false }
+    if takeFlag("--no-adapt") { options.adapt = false }
     if let i = args.firstIndex(of: "--tone") {
         args.remove(at: i)
         // Frequency value is optional: consume the next token only if it
@@ -106,11 +108,16 @@ options:
                        specific ports like 7805). Receivers using --browse
                        auto-discover the port via Bonjour; --connect users
                        read it from the sender's startup log.
-  --buffer-ms <ms>     playback delay budget, 20–5000 (default 150); FIXED for
-                       the whole stream (never auto-tuned).
+  --buffer-ms <ms>     playback delay FLOOR, 20–5000 (default 150). Adaptation
+                       (on by default) only ever climbs from here, never below.
                        larger = more network-jitter headroom, more latency.
                        Watch "margin=" in the receiver's stats to tune:
                        healthy margin minus ~30ms is your safe buffer floor.
+  --no-adapt           don't auto-raise the buffer; pin it at --buffer-ms for
+                       the whole stream (default: the sender ratchets the buffer
+                       UP when a receiver reports low margin/fill — each raise is
+                       one brief concealed dip — then holds, so audio stops
+                       breaking on a jittery network without you touching a flag)
   --name <name>        Bonjour service name (default: computer name)
   --no-follow-mute     don't mute receivers when this Mac is muted (default:
                        muting your Mac mutes the whole room)
@@ -141,7 +148,8 @@ do {
         peerToPeer: options.peerToPeer,
         passphrase: options.passphrase,
         bufferDelayMs: options.bufferDelayMs,
-        followSystemMute: options.followSystemMute
+        followSystemMute: options.followSystemMute,
+        adapt: options.adapt
     )
     if options.passphrase != nil { log("stream encryption: ON (receivers need the same --key)") }
     server.start()

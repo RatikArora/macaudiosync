@@ -108,7 +108,8 @@ app reflects it ("Muted — room is silent"). Disable with `--no-follow-mute`.
 own Mac otherwise wouldn't mute receivers.)
 
 Useful flags: `--tone [freq]` (test signal), `--no-local-play` (party
-without sender speakers), `--no-follow-mute`, `--port <p>`, `--buffer-ms <ms>` (see tuning),
+without sender speakers), `--no-follow-mute`, `--no-adapt` (pin the buffer at
+the floor — disables auto-raise), `--port <p>`, `--buffer-ms <ms>` (see tuning),
 `--name <bonjour name>`, `--key <passphrase>` (encrypt/authenticate the
 stream — ChaCha20-Poly1305; receivers need the same `--key`; without it
 the wire is plaintext and anyone on the LAN can listen — recommend a key
@@ -151,12 +152,12 @@ Test/CI flags: `--headless` (full pipeline, no speakers), `--exit-after <s>`.
 | `offset` | master-clock offset estimate | stable, sub-ms changes |
 | `rtt` | best probe round-trip | <1 ms LAN, <10 ms Wi-Fi |
 | `drift` | crystal skew estimate (ppm) | settles within ±50 |
-| `buffered` | audio queued ahead | ≈ the sender's fixed `--buffer-ms` |
+| `buffered` | audio queued ahead | ≈ the sender's current buffer (`--buffer-ms` floor, auto-raised) |
 | `margin` | min arrival headroom last second | > 30 ms; `LOW` warning printed under 15 ms |
 | `fill` | % of frames actually played | 100% |
 | `late` | chunks that arrived too late | 0 (occasional 1–2 on Wi-Fi ok) |
 | `peak` | max |sample| rendered last second | >0 when audio is actually playing; 0.00 = silence on the wire (nothing playing on sender) |
-| `tsJit` | consecutive chunks whose timestamps don't abut (>30µs) | 0 — ALWAYS. Nonzero = sender capture timestamps jitter → crackle at 100% fill; bug on the sender side (see gotcha below). The buffer is fixed, so a buffer change can never be the cause |
+| `tsJit` | consecutive chunks whose timestamps don't abut (>30µs) | 0 — ALWAYS. Nonzero = sender capture timestamps jitter → crackle at 100% fill; bug on the sender side (see gotcha below). NOTE: an adaptive buffer RAISE deliberately steps `playAt` forward once — that shows as a brief fill dip (concealed), NOT as `tsJit` (the step is one clean gap, not jittered abutment) |
 | `decodeErr` | malformed packets | 0 (also counts wrong-`--key` and unknown-codec packets) |
 
 The receiver still sends a once-a-second `feedback` packet upstream (min
@@ -165,24 +166,32 @@ but the sender **does NOT act on it** (it's informational, for the receiver's
 own stats and possible future use). The `feedback` case in `SenderServer.handle`
 is a no-op.
 
-### Latency tuning (sender's `--buffer-ms`, default 150 — a FIXED value)
+### Latency tuning (sender's `--buffer-ms`, default 150 — now a FLOOR, auto-raised)
 
-End-to-end delay ≈ buffer-ms + ~25–40 ms fixed stack floor. **The buffer is
-FIXED for the whole stream — the sender never changes it at runtime.** We tried
-adapting it (raise-and-lower, then raise-only); BOTH broke audio: changing the
-buffer mid-stream shifts every subsequent packet's play time, and the receiver
-hears that seam as a click or a burst of static while the timeline ramps. A
-constant buffer is the only thing that guarantees the stream never breaks from
-buffer tuning, so adaptation is gone — `--buffer-ms` is set once and held
-(`SenderServer.bufferDelayNs`). Tune it by hand for the network: watch the
-receiver's `margin=` — a comfortable floor is roughly `margin − 30 ms`; if you
-see `late`/fill<100%, raise `--buffer-ms` (or wire the Macs). Wired LAN ~40–60.
-Good 5 GHz Wi-Fi ~100–150. Congested Wi-Fi higher. Sub-10 ms is NOT achievable
-(capture blocks + DAC alone exceed it) — don't promise it; receiver↔receiver
-skew is already sub-ms, which is what audible sync depends on.
-(`AdaptiveController`/`Feedback` remain in SyncCore, unit-tested but unwired —
-reserved for a future artifact-free scheme, e.g. growing the buffer by
-inserting silence rather than shifting timestamps.)
+End-to-end delay ≈ buffer-ms + ~25–40 ms fixed stack floor. **The buffer
+auto-adapts (default ON): `--buffer-ms` is the FLOOR/initial; the sender
+ratchets it UP — never down — toward whatever the worst-case receiver needs for
+a clean, no-drop stream, then HOLDS.** This is the artifact-free scheme the old
+fixed buffer was waiting for: the receivers already report health upstream
+(`Feedback`: margin/late/fill), and `SenderServer.controlTick` (1 Hz) feeds the
+worst case to the unit-tested `AdaptiveController` (raise-only ratchet:
+distress=late|fill<98.5%|margin<12 → +30 ms; tight=margin<30 → +10 ms;
+healthy → hold). Each raise is applied as a **single STEP** — the next packet's
+`playAt` jumps forward by the increment, which every receiver renders as ONE
+brief silence gap that `GapConcealer` fades in/out click-free. We never LOWER it
+(shrinking the deadline makes in-flight packets land late = a real break) and
+never SLEW it (the continuous ramp was the static we used to hear — a clean step
++ concealment is what makes runtime tuning safe; `bufferDelayNs` is guarded by
+`bufferLock` and read once per `sendAudio`). After a raise the controller skips
+3 ticks (`raiseSettleTicks`) so the raise's own dip doesn't read as fresh
+distress and overshoot. `--no-adapt` pins the buffer at the floor (old fixed
+behavior). To set the floor by hand: watch `margin=` — a comfortable floor is
+roughly `margin − 30 ms`; you can still raise `--buffer-ms` (or wire the Macs)
+to skip the climb-from-cold. Wired LAN ~40–60. Good 5 GHz Wi-Fi ~100–150.
+Congested Wi-Fi: just let it adapt. Sub-10 ms is NOT achievable (capture blocks
++ DAC alone exceed it) — don't promise it; receiver↔receiver skew is sub-ms,
+which is what audible sync depends on, and adaptation keeps every receiver on
+the SAME buffer so that skew is preserved.
 
 ### Wi-Fi dropout bursts (observed in production 2026-06-03)
 
@@ -193,8 +202,11 @@ macOS Wi-Fi power-save/scan bursts delaying packets 70–150 ms. **`GapConcealer
 it holds+fades the last good sample and crossfades audio back in, so the abrupt
 step to/from zero that you actually *hear* is gone. The stats still report the
 underlying gap honestly (`fill`<100%, `late`), but it's far less audible. The
-16-bit wire format halves the traffic that causes congestion. The buffer no longer adapts
-(it broke audio — see Latency tuning), so you tune it by hand. If it breaks, in
+16-bit wire format halves the traffic that causes congestion. The buffer now
+auto-raises (see Latency tuning): a sustained burst pattern makes the sender
+ratchet the buffer up until the bursts fit inside it, then it holds — so this
+class of dropout self-corrects within a few seconds without you touching a flag.
+If you've pinned it with `--no-adapt`, or want to skip the climb, in
 order: (1) wire the Macs (Ethernet or USB-C cable → `--buffer-ms 40–60`, zero
 dropouts); (2) QoS voice-class + AWDL p2p are ON by default — compare with
 `--no-p2p` on BOTH sides if things get worse; (3) raise `--buffer-ms` above your
@@ -225,7 +237,7 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
 | garbled audio for ~10–15 s after a Mac wakes from sleep | should NOT happen anymore — `ClockSynchronizer` detects the offset step (CLOCK_UPTIME_RAW pauses during sleep) and flushes its window to re-baseline instead of averaging across the discontinuity (`stepThresholdNs`) |
 | app pinning CPU while hidden | should NOT happen — `AppActivity` pauses the ripple/waveform/radar TimelineViews when no window is visible (occluded/miniaturized/hidden). Audio is unaffected (engine subprocess) |
 | `pkts=0` / `peak=0.00` but sync works | audio source died on sender (nothing playing) — check sender log |
-| `late` climbing / fill <100% | network can't keep up at this buffer — raise `--buffer-ms` (the buffer is fixed, it won't self-correct) or wire the Macs |
+| `late` climbing / fill <100% | network can't keep up at this buffer — the sender now auto-raises it within a few seconds (watch for `buffer raised …` in the sender log, then fill should recover and hold). If it's pinned with `--no-adapt`, raise `--buffer-ms` by hand or wire the Macs |
 | `decodeErr` nonzero | wire-version mismatch (must be v2 on BOTH → `git pull` + rebuild BOTH), OR wrong `--key`, OR unknown codec tag |
 | port in use | another sender instance: `pkill -f audiosync-send` |
 | stream breaks on Wi-Fi/hotspot switch | should NOT happen anymore — both sides watch `NWPathMonitor` and re-establish in-process (receiver `reconnect`, sender `rebuildListener`). If it does, check for `network changed …` / `reconnecting …` lines and that Local Network permission is granted on the new network |
@@ -267,9 +279,9 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
    `SpectrumAnalyzer` (Accelerate FFT → log-spaced bands) that drives the app's
    real visualizer). `Sources/AudioSyncSender`,
    `Sources/AudioSyncReceiver` = thin Network.framework/ScreenCaptureKit/
-   CoreAudio-tap shells. `AdaptiveController` is unit-tested but currently
-   UNWIRED — the sender holds a fixed `bufferDelayNs` and never tunes it at
-   runtime (runtime buffer changes broke audio; see Latency tuning).
+   CoreAudio-tap shells. `AdaptiveController` is now WIRED into the sender
+   (`SenderServer.controlTick`): it raise-only ratchets `bufferDelayNs` from
+   live receiver `Feedback`, applied as concealed STEPs (see Latency tuning).
 5. **Known macOS gotchas (cost real debugging time):**
    - Objects created inside switch-case blocks in `main.swift` top-level
      code are RELEASED when the block ends — dispatch timers/NWBrowser
@@ -300,14 +312,17 @@ original… which needs the not-yet-built process-tap mode (see Roadmap).
      on a *transition* (dedupe on status+interface-set), and holds (renders
      silence) while the path is unsatisfied. Same generation+debounce pattern
      guards the sender's `rebuildListener`.
-   - **The send buffer is FIXED — never tune it at runtime.** We tried both an
-     adaptive raise/lower controller and a raise-only ratchet with a sub-30 µs
-     slew; both still produced audible clicks/static, because ANY change to the
-     buffer shifts every later packet's `playAt`, and the receiver hears that
-     timeline seam. `SenderServer.bufferDelayNs` is set once from `--buffer-ms`
-     and held for the whole stream. If you ever re-add adaptation, do it without
-     shifting timestamps (e.g. grow the buffer by inserting real silence), not
-     by sliding `playAt`.
+   - **The send buffer auto-raises by STEP, never by SLEW, never down.** The
+     hard-won rule is about HOW you change it: a continuous slew (a few µs per
+     packet) shifts every later `playAt` by tiny amounts forever → continuous
+     static; lowering it makes in-flight packets land late → a real break. Both
+     are still forbidden. What IS safe (and now wired): a single discrete STEP
+     UP — the next packet's `playAt` jumps forward once, the receiver renders
+     exactly one silence gap, and `GapConcealer` fades it click-free. That's the
+     "grow by inserting silence" scheme. `bufferDelayNs` is now a `var` guarded
+     by `bufferLock` (written by `controlTick` on the net queue, read once per
+     `sendAudio` on the capture queue) and only ever ratchets up via
+     `AdaptiveController`. `--no-adapt` keeps it pinned (old fixed behavior).
 6. **Core invariant:** receivers never "play the next packet"; every render
    asks "what does the master timeline put in this window?" Alignment is
    recomputed from timestamps every callback so errors can't accumulate.

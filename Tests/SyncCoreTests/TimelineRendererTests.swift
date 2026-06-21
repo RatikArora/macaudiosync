@@ -286,4 +286,38 @@ extension TimelineRendererTests {
         }
         #expect(windows > 80, "should have exercised many window boundaries, got \(windows)")
     }
+
+    // MARK: - Adaptive-buffer raise (sender steps playAt forward)
+
+    @Test func bufferRaiseRendersAsOneCleanSilenceGap() {
+        // When the sender raises its buffer mid-stream, every later packet's
+        // playAt jumps forward by the increment. The receiver must render that
+        // as exactly one silence gap — audio before AND after intact, nothing
+        // shifted or corrupted — which the GapConcealer then fades click-free.
+        let sr: Double = 48_000
+        let frameNs = 1e9 / sr
+        let t0: UInt64 = 2_000_000_000
+        let chunkFrames = 320
+        let chunkA = AudioChunk(sequence: 1, playAtMasterNs: t0, sampleRate: sr, channels: 2,
+                                samples: [Float](repeating: 0.5, count: chunkFrames * 2))
+        // Buffer raised by 30 ms (the controller's distress step) → B starts
+        // 30 ms LATER than it otherwise would have (a forward step).
+        let stepNs: UInt64 = 30_000_000
+        let bStart = t0 &+ UInt64(Double(chunkFrames) * frameNs) &+ stepNs
+        let chunkB = AudioChunk(sequence: 2, playAtMasterNs: bStart, sampleRate: sr, channels: 2,
+                                samples: [Float](repeating: -0.5, count: chunkFrames * 2))
+
+        let gapFrames = Int((Double(stepNs) * sr / 1e9).rounded()) // 1440
+        let total = chunkFrames + gapFrames + chunkFrames
+        let (out, stats) = render([chunkA, chunkB], frames: total, windowStartNs: t0)
+
+        // A: intact.
+        for f in 0..<chunkFrames { #expect(out[f * 2] == 0.5) }
+        // The raise: exactly the gap is silence (nothing before/after leaked in).
+        for f in chunkFrames..<(chunkFrames + gapFrames) { #expect(out[f * 2] == 0) }
+        // B: intact and correctly delayed by the step (not corrupted/shifted off).
+        for f in (chunkFrames + gapFrames)..<total { #expect(out[f * 2] == -0.5) }
+        #expect(stats.framesSilent == gapFrames, "only the raise increment is silent")
+        #expect(stats.framesFilled == chunkFrames * 2)
+    }
 }

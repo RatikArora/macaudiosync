@@ -37,16 +37,29 @@ final class SenderServer {
     private var packetsSent: UInt64 = 0
     private var lastStatsPacketsSent: UInt64 = 0
     private var statsTimer: DispatchSourceTimer?
+    private var controlTimer: DispatchSourceTimer?
 
-    /// Playback delay budget (latency), FIXED for the lifetime of the stream.
-    /// We deliberately never change it while streaming: any runtime change
-    /// shifts every subsequent packet's play time, and the receiver hears that
-    /// seam as a click or a burst of static as the timeline ramps. A constant
-    /// buffer is the only way to guarantee the stream never breaks from buffer
-    /// tuning. Set it once with --buffer-ms (raise it on a flaky network).
-    /// Receivers still report their health upstream — it shows in their own
-    /// stats — the sender just doesn't act on it anymore.
-    private let bufferDelayNs: UInt64
+    /// Playback delay budget (latency) in ns. With adaptation ON (default) this
+    /// is the FLOOR/initial value and the sender ratchets it UP — never down —
+    /// toward whatever the worst-case receiver needs for a clean, no-drop
+    /// stream, then HOLDS. Each raise is one STEP: the next packet's play time
+    /// jumps forward by the increment, which the receiver renders as a single
+    /// brief silence gap that its `GapConcealer` fades in/out click-free — far
+    /// better than the permanent dropouts of a too-small buffer. We NEVER lower
+    /// it (shrinking the deadline makes in-flight packets land late = a real
+    /// break) and NEVER slew it a few µs per packet (that continuous ramp was
+    /// the static we used to hear — a clean step + concealment is what makes
+    /// runtime tuning safe now). Guarded by `bufferLock`: `sendAudio` reads it
+    /// on the capture queue while `controlTick` writes it on the net queue.
+    /// `--buffer-ms` sets the floor; `--no-adapt` disables and pins it there.
+    private let bufferLock = NSLock()
+    private var bufferDelayNs: UInt64
+    /// Raise-only buffer controller, nil when `--no-adapt`. Touched only on the
+    /// net queue (the control tick).
+    private let controller: AdaptiveController?
+    /// After a raise, skip this many control ticks so the raise's own
+    /// concealment dip doesn't read as fresh distress and overshoot the buffer.
+    private var raiseSettleTicks = 0
     /// Wire codec for outgoing audio: Int16 is half the bytes of Float32 and
     /// perceptually transparent. (Local --party playback still gets the full
     /// Float32 chunk via `localSink`.)
@@ -55,6 +68,10 @@ final class SenderServer {
     private struct ClientState {
         let connection: NWConnection
         var lastSeenNs: UInt64
+        /// Most recent health report from this receiver, for the adaptive
+        /// buffer (nil until the first feedback arrives).
+        var lastFeedback: Feedback?
+        var lastFeedbackNs: UInt64 = 0
     }
 
     /// Optional local consumer of every chunk (used by --party mode to feed
@@ -69,12 +86,19 @@ final class SenderServer {
     /// (capture taps audio before the output volume, so we silence it here).
     private let muteMonitor: SystemMuteMonitor?
 
-    init(port: UInt16, serviceName: String, peerToPeer: Bool = true, passphrase: String? = nil, bufferDelayMs: Int = 150, followSystemMute: Bool = true) throws {
+    init(port: UInt16, serviceName: String, peerToPeer: Bool = true, passphrase: String? = nil, bufferDelayMs: Int = 150, followSystemMute: Bool = true, adapt: Bool = true) throws {
         self.muteMonitor = followSystemMute ? SystemMuteMonitor() : nil
         cipher = passphrase.flatMap { $0.isEmpty ? nil : StreamCipher(passphrase: $0) }
         self.serviceName = serviceName
         let clampedMs = max(20, min(bufferDelayMs, 5000))
         self.bufferDelayNs = UInt64(clampedMs) * 1_000_000
+        // --buffer-ms is the FLOOR; adaptation only ever climbs from there, up
+        // to a generous ceiling (a terrible network is allowed to trade latency
+        // for "audio doesn't break", which is the whole point of adapting).
+        self.controller = adapt
+            ? AdaptiveController(initialBufferMs: clampedMs, floorMs: clampedMs,
+                                 ceilMs: min(5000, max(clampedMs, 1000)))
+            : nil
         // port == 0 → ask the OS for an ephemeral port (IANA dynamic range
         // 49152–65535). Corporate Wi-Fi controllers occasionally blocklist
         // specific known ports (we hit 7805 being filtered on one office
@@ -108,6 +132,7 @@ final class SenderServer {
         pathMonitor.start(queue: queue)
         listener?.start(queue: queue)
         startStatsTimer()
+        if controller != nil { startControlTimer() }
         muteMonitor?.onChange = { muted in
             log(muted
                 ? "system muted — silencing all receivers"
@@ -307,11 +332,13 @@ final class SenderServer {
                 serverSendNs: MonotonicClock.nowNs()
             ))
             connection.send(content: wrap(reply), completion: .contentProcessed { _ in })
-        case .feedback:
-            // Receivers report health upstream; with a fixed buffer the sender
-            // doesn't act on it (kept on the wire for the receiver's own stats
-            // and possible future use).
-            break
+        case .feedback(let fb):
+            // Stash the receiver's latest health report for the adaptive buffer
+            // (the control tick aggregates the worst case across receivers).
+            clientsLock.lock()
+            clients[key]?.lastFeedback = fb
+            clients[key]?.lastFeedbackNs = receivedNs
+            clientsLock.unlock()
         case .clockReply, .audio:
             break // not valid from a client; ignore
         }
@@ -321,9 +348,9 @@ final class SenderServer {
 
     /// Split a run of interleaved samples into MTU-sized packets and send to
     /// every connected receiver. `sourceClockNs` is the master-clock capture
-    /// time of the first frame; the server adds its current (adaptive,
-    /// slew-limited) buffer to derive each packet's play time. The local
-    /// --party sink always receives the full-quality Float32 chunk.
+    /// time of the first frame; the server adds its current buffer to derive
+    /// each packet's play time. The local --party sink always receives the
+    /// full-quality Float32 chunk.
     func sendAudio(samples: [Float], sourceClockNs: UInt64, sampleRate: Double, channels: Int) {
         let totalFrames = samples.count / channels
         // Size packets for the wire codec (Int16) so we send fewer, fuller
@@ -334,13 +361,16 @@ final class SenderServer {
         // stream, clocks and connection alive so unmuting resumes instantly,
         // while every receiver (and local party playback) goes quiet.
         let muted = muteMonitor?.isMuted ?? false
+        // Read the buffer once for this whole capture run so every packet in it
+        // shares one value — a mid-run change would split it across two play
+        // timelines. Between runs the control tick may have raised it; that
+        // step lands as a single concealed gap (see `bufferDelayNs`).
+        bufferLock.lock()
+        let bufferNs = bufferDelayNs
+        bufferLock.unlock()
         var frameOffset = 0
         while frameOffset < totalFrames {
             let n = min(framesPerPacket, totalFrames - frameOffset)
-            // Fixed buffer — never changed mid-stream, so packet play times
-            // advance exactly with the audio and there is no seam to click on.
-            let bufferNs = bufferDelayNs
-
             let slice = muted
                 ? [Float](repeating: 0, count: n * channels)
                 : Array(samples[(frameOffset * channels)..<((frameOffset + n) * channels)])
@@ -409,6 +439,50 @@ final class SenderServer {
         }
         timer.resume()
         statsTimer = timer
+    }
+
+    // MARK: - Adaptive buffer
+
+    /// Once a second, raise the playback buffer toward what the worst-case
+    /// receiver needs, then hold. Runs on `queue` (the net queue).
+    private func startControlTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        // Start after a short delay so clock sync has warmed up and the first
+        // round of receiver feedback has arrived.
+        timer.schedule(deadline: .now() + 3, repeating: 1)
+        timer.setEventHandler { [weak self] in self?.controlTick() }
+        timer.resume()
+        controlTimer = timer
+    }
+
+    private func controlTick() {
+        guard let controller else { return }
+        let now = MonotonicClock.nowNs()
+        clientsLock.lock()
+        // Only fresh reports (last 3 s) — a reconnecting receiver's silence
+        // shouldn't drag the buffer up or down.
+        let reports = clients.values.compactMap { st -> Feedback? in
+            guard let fb = st.lastFeedback, now &- st.lastFeedbackNs < 3_000_000_000 else { return nil }
+            return fb
+        }
+        clientsLock.unlock()
+        // No receivers reporting → nothing to tune; hold.
+        guard !reports.isEmpty else { return }
+        // Let a just-applied raise take effect (its concealment dip would
+        // otherwise look like fresh distress) before considering another.
+        if raiseSettleTicks > 0 { raiseSettleTicks -= 1; return }
+
+        bufferLock.lock()
+        let currentMs = Int(bufferDelayNs / 1_000_000)
+        bufferLock.unlock()
+
+        let targetMs = controller.step(currentBufferMs: currentMs, ControllerInput.worstCase(reports))
+        guard targetMs > currentMs else { return } // raise-only; hold otherwise
+        bufferLock.lock()
+        bufferDelayNs = UInt64(targetMs) * 1_000_000
+        bufferLock.unlock()
+        raiseSettleTicks = 3
+        log("buffer raised \(currentMs)→\(targetMs)ms (a receiver's margin/fill is low) — one brief dip while it takes effect")
     }
 }
 

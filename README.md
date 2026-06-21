@@ -67,12 +67,15 @@ needs right-click → Open (it's ad-hoc signed, no developer account).
   blocking device-to-device traffic / *client isolation* (*use a hotspot or a
   cable*) — instead of failing silently. The sender shows a copyable **join
   code** for the Manual Connect field.
-- **Lighter on the network, rock-steady buffer.** Audio is sent as 16-bit PCM
-  (half the bandwidth of before, perceptually identical). The latency buffer is
-  **fixed** for the whole stream — set once and never touched. (We tried tuning
-  it live; every change shifted packet play times and the receiver heard a
-  click/static at the seam, so the only guarantee against breakage is a constant
-  buffer. Raise `--buffer-ms` by hand on a flaky network.)
+- **Lighter on the network, self-tuning buffer.** Audio is sent as 16-bit PCM
+  (half the bandwidth of before, perceptually identical). The latency buffer
+  **auto-adapts**: `--buffer-ms` is the floor, and when a receiver reports it's
+  running low on headroom (late packets / falling fill) the sender ratchets the
+  buffer **up** — never down — until the stream is clean again, then holds. Each
+  raise is a single step that lands as one brief, click-free dip (concealed),
+  not the continuous static that live *slewing* used to cause — so a jittery
+  network stops breaking up on its own without you touching a flag. `--no-adapt`
+  pins it at the floor.
 - **Updates itself.** An update banner appears in-app when a newer build is on
   GitHub — one click downloads it, swaps the app in place, and relaunches. (Also
   in the About sheet.)
@@ -161,10 +164,11 @@ audiosync-send:
   --port <port>        UDP port (default 0 = OS-assigned ephemeral port,
                        avoids corporate Wi-Fi port blocklists; Bonjour
                        publishes the actual port for `--browse` receivers)
-  --buffer-ms <ms>     playback delay budget 20–5000 (default 150); FIXED for
-                       the whole stream (never auto-tuned). Raise it by hand on
-                       a flaky network — watch the receiver's margin=. See
+  --buffer-ms <ms>     playback delay FLOOR 20–5000 (default 150). The sender
+                       auto-raises above this when a receiver runs low on
+                       headroom, then holds. Watch the receiver's margin=. See
                        "Latency".
+  --no-adapt           don't auto-raise; pin the buffer at --buffer-ms
   --name <name>        Bonjour service name
   --no-p2p             disable the AWDL peer-to-peer link (router only)
   --key <passphrase>   encrypt + authenticate the stream (both sides must match)
@@ -209,8 +213,11 @@ audiosync-recv:
 
 4. **Jitter buffer.** Chunks are inserted sorted by timestamp, duplicates
    dropped, stragglers behind the playhead rejected, consumed chunks freed
-   each render pass. The `--buffer-ms` delay budget absorbs network jitter:
-   every receiver plays equally "late", which is what keeps them together.
+   each render pass. The buffer delay absorbs network jitter: every receiver
+   plays equally "late", which is what keeps them together. The sender starts
+   at the `--buffer-ms` floor and ratchets it up (same value for everyone, so
+   the shared "lateness" — and thus receiver↔receiver sync — is preserved)
+   based on receivers' upstream health feedback until the stream runs clean.
 
 ## Latency: what it is and how to tune it
 
@@ -243,12 +250,15 @@ effectiveness:
 1. **Wire the Macs**: Ethernet, or a USB-C/Thunderbolt cable between them
    (creates a direct network link). Buffer can then drop to 40–60 ms and
    dropouts disappear entirely.
-2. **Raise `--buffer-ms`**: the buffer is fixed, so on a bursty network set it
-   above your worst observed delay (e.g. 250–500). The 16-bit wire format (half
-   the bytes) also reduces the congestion that causes bursts in the first place.
-   (The buffer is deliberately *not* auto-tuned — changing it mid-stream shifts
-   packet play times and the receiver hears a click/static at the seam, so it's
-   set once and held.)
+2. **Let it adapt (default), or raise `--buffer-ms`**: the sender now
+   auto-ratchets the buffer up when receivers report low headroom, so a bursty
+   network self-corrects within a few seconds (look for `buffer raised …` in the
+   sender log). Each raise is applied as one clean concealed step — never a
+   continuous slew (which caused static) and never downward (which dropped
+   packets). To skip the climb-from-cold on a known-bad network, set
+   `--buffer-ms` high directly (e.g. 250–500); to disable adaptation entirely,
+   `--no-adapt`. The 16-bit wire format also reduces the congestion that causes
+   bursts in the first place.
 3. **Built-in QoS + peer-to-peer** (on by default since v1.1): packets are
    marked voice-class (Wi-Fi WMM priority, exempt from power-save
    buffering) and the AWDL direct Mac-to-Mac link is enabled. If audio gets
